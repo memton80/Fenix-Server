@@ -154,6 +154,41 @@ install_polkit_policies() {
     fi
 }
 
+install_desktop_entry() {
+    local src="$PROJECT_ROOT/update-manager/fenix-update-manager.desktop"
+    local app_dir="$PROJECT_ROOT/update-manager"
+    local launcher="/usr/local/bin/fenix-update-manager"
+    local dest_dir="/usr/share/applications"
+    local dest="$dest_dir/fenix-update-manager.desktop"
+    if [[ ! -f "$src" ]]; then
+        ko "Fichier .desktop introuvable ($src)"
+        return
+    fi
+
+    # Lanceur dédié : le dépôt n'est pas packagé, on porte ici le cwd de l'app
+    # et le PYTHONPATH vers la racine (pour importer `core`). Évite les
+    # caractères réservés interdits dans la clé Exec d'un .desktop.
+    if cat > "$launcher" <<EOF
+#!/usr/bin/env bash
+cd "$app_dir" || exit 1
+exec env PYTHONPATH="$PROJECT_ROOT" python3 main.py
+EOF
+    then
+        chmod 755 "$launcher"
+    else
+        ko "Échec de la création du lanceur ($launcher)"
+        return
+    fi
+
+    mkdir -p "$dest_dir"
+    if cp "$src" "$dest"; then
+        chmod 644 "$dest"
+        ok "Entrée de menu installée ($dest) + lanceur ($launcher)"
+    else
+        ko "Échec de l'installation de l'entrée de menu"
+    fi
+}
+
 # --- résumé ----------------------------------------------------------------
 
 print_summary() {
@@ -201,6 +236,9 @@ main() {
 
     step "Installation de la policy Polkit"
     install_polkit_policies
+
+    step "Installation de l'entrée de menu (.desktop)"
+    install_desktop_entry
 
     print_summary
     (( FAILURES == 0 ))
