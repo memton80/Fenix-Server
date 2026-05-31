@@ -1,0 +1,8 @@
+{
+    "id": "updates",
+    "name": "Mises à jour",
+    "description": "MAJ système (PackageKit) et MAJ des services Fenix",
+    "service_name": "org.freedesktop.PackageKit",
+    "service_type": "dbus",
+    "app": "update-manager"
+}

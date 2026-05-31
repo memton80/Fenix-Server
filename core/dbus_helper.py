@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from dasbus.connection import SystemMessageBus
+from dasbus.connection import SessionMessageBus, SystemMessageBus
 from dasbus.error import DBusError
 
 if TYPE_CHECKING:
@@ -41,6 +41,32 @@ def get_system_bus() -> "MessageBus":
     except DBusError as exc:
         logger.error("Bus système D-Bus indisponible: %s", exc)
         raise RuntimeError("Bus système D-Bus indisponible") from exc
+
+
+def get_session_bus() -> "MessageBus":
+    """Retourne la connexion au bus de session D-Bus (dasbus ``SessionMessageBus``).
+
+    Réservé aux services **de session** (préférences utilisateur, portails XDG,
+    KWin, ...). Pour les services système, utiliser :func:`get_system_bus`.
+
+    La connexion doit être réutilisée par l'appelant plutôt que recréée à
+    chaque appel.
+
+    Returns:
+        La connexion au bus de session.
+
+    Raises:
+        RuntimeError: si le bus de session est indisponible.
+    """
+    try:
+        bus = SessionMessageBus()
+        # Force l'établissement de la connexion pour détecter tout de suite
+        # un bus de session absent (plutôt qu'à la première utilisation).
+        _ = bus.connection
+        return bus
+    except DBusError as exc:
+        logger.error("Bus de session D-Bus indisponible: %s", exc)
+        raise RuntimeError("Bus de session D-Bus indisponible") from exc
 
 
 def service_available(service_name: str) -> bool:
