@@ -1,0 +1,7 @@
+{
+    "id": "ad",
+    "name": "Active Directory",
+    "description": "Domaine, utilisateurs et groupes via Samba 4",
+    "service_name": "smbd",
+    "app": "ad-manager"
+}
