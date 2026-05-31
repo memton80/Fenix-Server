@@ -16,14 +16,8 @@ from models.update_item import SystemPackageUpdate
 from services import packagekit_service as pk
 from services.packagekit_service import PackageKitService
 
-
-@pytest.fixture(scope="session", autouse=True)
-def _qapp():
-    """Une QCoreApplication est nécessaire pour émettre/connecter les signaux Qt."""
-    from PySide6.QtCore import QCoreApplication
-
-    app = QCoreApplication.instance() or QCoreApplication([])
-    yield app
+# La QApplication partagée (fixture `qapp` du conftest) suffit pour émettre et
+# connecter les signaux Qt.
 
 
 def _make_bus(manager: MagicMock, transaction: MagicMock, tx_path: str = "/tx/1") -> MagicMock:
