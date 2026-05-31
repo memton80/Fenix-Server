@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 SYSTEMD_SERVICE = "org.freedesktop.systemd1"
 SYSTEMD_OBJECT = "/org/freedesktop/systemd1"
 
-# Suffixes d'unités systemd permettant de distinguer une unité d'un nom de bus.
+# Suffixe ajouté à un service_name systemd quand aucune unité n'est précisée.
+_DEFAULT_SYSTEMD_SUFFIX = ".service"
 _SYSTEMD_SUFFIXES = (
     ".service",
     ".socket",
@@ -32,8 +33,13 @@ _SYSTEMD_SUFFIXES = (
     ".slice",
 )
 
+# Types de service supportés pour la détection d'état (champ "service_type").
+SERVICE_TYPE_SYSTEMD = "systemd"
+SERVICE_TYPE_DBUS = "dbus"
+_VALID_SERVICE_TYPES = (SERVICE_TYPE_SYSTEMD, SERVICE_TYPE_DBUS)
+
 # Champs obligatoires d'un fichier de rôle JSON.
-_REQUIRED_FIELDS = ("id", "name", "description", "service_name", "app")
+_REQUIRED_FIELDS = ("id", "name", "description", "service_name", "service_type", "app")
 
 
 @dataclass(frozen=True)
@@ -44,8 +50,12 @@ class Role:
         id: Identifiant unique du rôle, ex. ``"ad"``, ``"updates"``.
         name: Nom affiché du rôle.
         description: Description courte du rôle.
-        service_name: Nom du service système associé (unité systemd ou nom bus
-            D-Bus), ex. ``"smbd"`` ou ``"org.freedesktop.PackageKit"``.
+        service_name: Nom du service système associé. Selon ``service_type`` :
+            une unité systemd (ex. ``"smbd"``) ou un nom de bus D-Bus
+            (ex. ``"org.freedesktop.PackageKit"``).
+        service_type: Type de service, déterminant comment l'état est lu :
+            ``"systemd"`` (état de l'unité) ou ``"dbus"`` (propriétaire du nom
+            de bus).
         app: Répertoire de l'app KDE qui gère le rôle, ex. ``"ad-manager"``.
     """
 
@@ -53,6 +63,7 @@ class Role:
     name: str
     description: str
     service_name: str
+    service_type: str
     app: str
 
     @classmethod
@@ -67,23 +78,28 @@ class Role:
             Le rôle correspondant.
 
         Raises:
-            ValueError: si un champ obligatoire est absent.
+            ValueError: si un champ obligatoire est absent ou si
+                ``service_type`` n'est pas une valeur supportée.
         """
         missing = [field for field in _REQUIRED_FIELDS if field not in data]
         if missing:
             raise ValueError(f"Champs manquants {missing} dans {source}")
+
+        service_type = str(data["service_type"])
+        if service_type not in _VALID_SERVICE_TYPES:
+            raise ValueError(
+                f"service_type invalide '{service_type}' dans {source} "
+                f"(attendu: {', '.join(_VALID_SERVICE_TYPES)})"
+            )
+
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
             description=str(data["description"]),
             service_name=str(data["service_name"]),
+            service_type=service_type,
             app=str(data["app"]),
         )
-
-
-def _looks_like_dbus_name(service_name: str) -> bool:
-    """Indique si ``service_name`` est un nom de bus D-Bus (et non une unité systemd)."""
-    return "." in service_name and not service_name.endswith(_SYSTEMD_SUFFIXES)
 
 
 class RoleRegistry:
@@ -150,7 +166,7 @@ class RoleRegistry:
             ``True`` si le service associé est actif, ``False`` sinon.
         """
         role = self.get(role_id)
-        return self._service_running(role.service_name)
+        return self._service_running(role)
 
     def active_roles(self) -> list[Role]:
         """Retourne la liste des rôles actuellement actifs."""
@@ -158,19 +174,20 @@ class RoleRegistry:
 
     # --- état des services ------------------------------------------------
 
-    def _service_running(self, service_name: str) -> bool:
+    def _service_running(self, role: Role) -> bool:
         """Détermine si le service d'un rôle tourne, via D-Bus.
 
-        Selon la forme de ``service_name`` : nom de bus D-Bus (propriétaire
-        présent sur le bus) ou unité systemd (``ActiveState == "active"``).
-        Toute erreur D-Bus est loggée et traitée comme « inactif ».
+        Le mode de détection est choisi explicitement par ``role.service_type`` :
+        ``"dbus"`` (propriétaire présent sur le bus) ou ``"systemd"``
+        (``ActiveState == "active"``). Toute erreur D-Bus est loggée et traitée
+        comme « inactif ».
         """
         try:
-            if _looks_like_dbus_name(service_name):
-                return self._dbus_name_running(service_name)
-            return self._systemd_unit_active(service_name)
+            if role.service_type == SERVICE_TYPE_DBUS:
+                return self._dbus_name_running(role.service_name)
+            return self._systemd_unit_active(role.service_name)
         except (DBusError, RuntimeError) as exc:
-            logger.error("État du service %s indéterminé: %s", service_name, exc)
+            logger.error("État du service %s indéterminé: %s", role.service_name, exc)
             return False
 
     def _dbus_name_running(self, bus_name: str) -> bool:
@@ -181,7 +198,7 @@ class RoleRegistry:
         """Vrai si l'unité systemd correspondante est dans l'état ``active``."""
         unit_name = service_name
         if not service_name.endswith(_SYSTEMD_SUFFIXES):
-            unit_name = f"{service_name}.service"
+            unit_name = f"{service_name}{_DEFAULT_SYSTEMD_SUFFIX}"
 
         manager = get_service_proxy(SYSTEMD_SERVICE, SYSTEMD_OBJECT)
         try:

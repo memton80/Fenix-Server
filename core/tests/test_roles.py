@@ -20,6 +20,7 @@ def _write_role(roles_dir: Path, role_id: str, **overrides) -> None:
         "name": overrides.get("name", role_id.upper()),
         "description": overrides.get("description", f"Rôle {role_id}"),
         "service_name": overrides.get("service_name", f"{role_id}.service"),
+        "service_type": overrides.get("service_type", "systemd"),
         "app": overrides.get("app", f"{role_id}-manager"),
     }
     (roles_dir / f"{role_id}.json").write_text(json.dumps(data), encoding="utf-8")
@@ -74,6 +75,7 @@ def test_load_id_duplique_leve_valueerror(tmp_path: Path):
                 "name": "AD bis",
                 "description": "doublon",
                 "service_name": "smbd",
+                "service_type": "systemd",
                 "app": "ad-manager",
             }
         ),
@@ -101,7 +103,9 @@ def test_get_role_inconnu_leve_keyerror(tmp_path: Path):
 
 def test_is_active_dbus_name_actif(tmp_path: Path):
     """Un rôle dont le service est un nom de bus actif est is_active=True."""
-    _write_role(tmp_path, "updates", service_name="org.freedesktop.PackageKit")
+    _write_role(
+        tmp_path, "updates", service_name="org.freedesktop.PackageKit", service_type="dbus"
+    )
     registry = RoleRegistry(tmp_path)
     registry.load()
 
@@ -117,7 +121,9 @@ def test_is_active_dbus_name_actif(tmp_path: Path):
 
 def test_is_active_dbus_name_inactif(tmp_path: Path):
     """Un nom de bus sans propriétaire est is_active=False."""
-    _write_role(tmp_path, "updates", service_name="org.freedesktop.PackageKit")
+    _write_role(
+        tmp_path, "updates", service_name="org.freedesktop.PackageKit", service_type="dbus"
+    )
     registry = RoleRegistry(tmp_path)
     registry.load()
 
@@ -190,7 +196,9 @@ def test_is_active_unite_non_chargee(tmp_path: Path):
 
 def test_is_active_erreur_dbus_retourne_false(tmp_path: Path):
     """Une erreur D-Bus pendant la vérification donne False, sans propager."""
-    _write_role(tmp_path, "updates", service_name="org.freedesktop.PackageKit")
+    _write_role(
+        tmp_path, "updates", service_name="org.freedesktop.PackageKit", service_type="dbus"
+    )
     registry = RoleRegistry(tmp_path)
     registry.load()
 
@@ -232,8 +240,19 @@ def test_role_from_dict_valide():
             "name": "Active Directory",
             "description": "Gestion AD/Samba",
             "service_name": "smbd",
+            "service_type": "systemd",
             "app": "ad-manager",
         },
         Path("ad.json"),
     )
-    assert role == Role("ad", "Active Directory", "Gestion AD/Samba", "smbd", "ad-manager")
+    assert role == Role(
+        "ad", "Active Directory", "Gestion AD/Samba", "smbd", "systemd", "ad-manager"
+    )
+
+
+def test_load_service_type_invalide_leve_valueerror(tmp_path: Path):
+    """Un service_type hors {systemd, dbus} lève ValueError."""
+    _write_role(tmp_path, "ad", service_type="docker")
+    registry = RoleRegistry(tmp_path)
+    with pytest.raises(ValueError, match="service_type invalide"):
+        registry.load()
