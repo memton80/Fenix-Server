@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Fenix — Gestionnaire de mises à jour
+Comment=Mises à jour système (PackageKit) et services Fenix
+Comment[en]=System updates (PackageKit) and Fenix services
+Exec=fenix-update-manager
+Icon=system-software-update
+Terminal=false
+Categories=System;
