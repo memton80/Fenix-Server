@@ -37,6 +37,33 @@ def test_get_system_bus_bus_absent_leve_runtimeerror():
             dbus_helper.get_system_bus()
 
 
+# --- get_session_bus ------------------------------------------------------
+
+
+def test_get_session_bus_retourne_la_connexion():
+    """get_session_bus instancie un SessionMessageBus et force la connexion."""
+    fake_bus = MagicMock()
+    fake_bus.connection = MagicMock()
+
+    with patch.object(dbus_helper, "SessionMessageBus", return_value=fake_bus) as ctor:
+        bus = dbus_helper.get_session_bus()
+
+    ctor.assert_called_once_with()
+    assert bus is fake_bus
+
+
+def test_get_session_bus_bus_absent_leve_runtimeerror():
+    """Une DBusError à la connexion de session est convertie en RuntimeError."""
+    fake_bus = MagicMock()
+    type(fake_bus).connection = property(
+        lambda self: (_ for _ in ()).throw(DBusError("pas de bus"))
+    )
+
+    with patch.object(dbus_helper, "SessionMessageBus", return_value=fake_bus):
+        with pytest.raises(RuntimeError, match="session"):
+            dbus_helper.get_session_bus()
+
+
 # --- service_available ----------------------------------------------------
 
 

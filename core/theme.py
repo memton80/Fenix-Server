@@ -20,8 +20,9 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from dasbus.connection import SessionMessageBus
 from dasbus.error import DBusError
+
+from core.dbus_helper import get_session_bus
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QIcon
@@ -96,9 +97,9 @@ def _read_color_scheme() -> int | None:
         L'entier de préférence (0/1/2) ou ``None`` si indisponible/illisible.
     """
     try:
-        portal = SessionMessageBus().get_proxy(PORTAL_SERVICE, PORTAL_OBJECT)
+        portal = get_session_bus().get_proxy(PORTAL_SERVICE, PORTAL_OBJECT)
         raw = portal.Read(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY)
-    except DBusError as exc:
+    except (DBusError, RuntimeError) as exc:
         logger.warning("Lecture de la préférence de thème KDE échouée: %s", exc)
         return None
     return _unwrap_int(raw)

@@ -12,7 +12,7 @@ from core.theme import ThemeManager, ThemeMode
 
 
 def _patch_portal(read_return=None, read_side_effect=None):
-    """Patche SessionMessageBus pour simuler la réponse du portail XDG."""
+    """Patche get_session_bus pour simuler la réponse du portail XDG."""
     portal = MagicMock()
     if read_side_effect is not None:
         portal.Read.side_effect = read_side_effect
@@ -20,7 +20,7 @@ def _patch_portal(read_return=None, read_side_effect=None):
         portal.Read.return_value = read_return
     bus = MagicMock()
     bus.get_proxy.return_value = portal
-    return patch.object(theme, "SessionMessageBus", return_value=bus), portal
+    return patch.object(theme, "get_session_bus", return_value=bus), portal
 
 
 # --- mode / couleurs ------------------------------------------------------
@@ -119,6 +119,12 @@ def test_detect_system_mode_erreur_dbus_retourne_none():
     """Une DBusError pendant la lecture du portail donne None (pas de propagation)."""
     p, _ = _patch_portal(read_side_effect=DBusError("pas de portail"))
     with p:
+        assert ThemeManager.detect_system_mode() is None
+
+
+def test_detect_system_mode_bus_session_indisponible_retourne_none():
+    """Si le bus de session est indisponible (RuntimeError), on obtient None."""
+    with patch.object(theme, "get_session_bus", side_effect=RuntimeError("pas de bus")):
         assert ThemeManager.detect_system_mode() is None
 
 
