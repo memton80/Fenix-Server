@@ -1,12 +1,15 @@
-"""Opérations Active Directory de l'AD Manager (au-dessus de LDAP).
+"""Opérations Active Directory de l'AD Manager.
 
-Compose les requêtes LDAP de :class:`LDAPService` en opérations métier
-(utilisateurs, groupes, domaine) et protège chaque opération modifiant
-l'annuaire par une vérification Polkit effectuée AVANT l'action.
+Les lectures (liste / recherche / infos domaine) passent par LDAP
+(:class:`LDAPService`). Les opérations privilégiées — création et suppression
+d'utilisateurs et de groupes, définition du mot de passe — sont déléguées à
+``samba-tool`` exécuté via ``pkexec`` (même approche que ``role_service`` avec
+``systemctl``) : l'élévation et l'autorisation sont gérées par pkexec/Polkit,
+sans vérification Polkit explicite dans le code.
 
-Nomenclature Polkit : ``org.fenixserver.ad.<action>``
-(``create-user``, ``modify-user``, ``delete-user``, ``create-group``,
-``delete-group``).
+La modification d'attributs (nom affiché, e-mail) reste une écriture LDAP sous
+le bind administrateur authentifié : ``samba-tool`` n'offre pas d'éditeur
+d'attributs non interactif.
 """
 
 from __future__ import annotations
@@ -17,18 +20,11 @@ import subprocess
 from models.ad_group import ADGroup
 from models.ad_user import ADUser
 
-from core.polkit import PolkitClient
 from services.ldap_service import LDAPService
 
 logger = logging.getLogger(__name__)
 
-POLKIT_ACTION_CREATE_USER = "org.fenixserver.ad.create-user"
-POLKIT_ACTION_MODIFY_USER = "org.fenixserver.ad.modify-user"
-POLKIT_ACTION_DELETE_USER = "org.fenixserver.ad.delete-user"
-POLKIT_ACTION_CREATE_GROUP = "org.fenixserver.ad.create-group"
-POLKIT_ACTION_DELETE_GROUP = "org.fenixserver.ad.delete-group"
-
-# Filtres et attributs LDAP des objets manipulés.
+# Filtres et attributs LDAP des objets manipulés (lectures).
 _USER_FILTER = "(&(objectClass=user)(objectCategory=person))"
 _USER_ATTRIBUTES = [
     "sAMAccountName",
@@ -41,13 +37,8 @@ _USER_ATTRIBUTES = [
 _GROUP_FILTER = "(objectClass=group)"
 _GROUP_ATTRIBUTES = ["sAMAccountName", "cn", "description", "member"]
 
-_USER_OBJECT_CLASSES = ["top", "person", "organizationalPerson", "user"]
-_GROUP_OBJECT_CLASSES = ["top", "group"]
-
-# Conteneur par défaut des comptes/groupes et valeur userAccountControl d'un
-# compte normal activé.
+# Conteneur par défaut des comptes/groupes (pour reconstituer leur DN).
 _USERS_CONTAINER = "cn=Users"
-_UF_NORMAL_ACCOUNT = 512
 
 # Échappement des caractères spéciaux dans une valeur de filtre LDAP (RFC 4515),
 # pour éviter toute injection via un nom d'utilisateur/groupe.
@@ -62,28 +53,40 @@ def _escape_filter(value: str) -> str:
 class ADService:
     """Expose les opérations AD (utilisateurs, groupes, domaine)."""
 
-    def __init__(self, ldap: LDAPService, polkit: PolkitClient | None = None) -> None:
+    def __init__(self, ldap: LDAPService) -> None:
         """Initialise le service AD.
 
         Args:
-            ldap: Service LDAP connecté au contrôleur de domaine.
-            polkit: Client Polkit (injectable pour les tests) ; un client par
-                défaut est créé si absent.
+            ldap: Service LDAP connecté au contrôleur de domaine (lectures).
         """
         self._ldap = ldap
-        self._polkit = polkit or PolkitClient()
 
-    def _authorize(self, action: str) -> None:
-        """Vérifie l'autorisation Polkit d'une action, AVANT toute modification.
+    def _run_samba_tool(self, *args: str) -> None:
+        """Exécute ``pkexec samba-tool <args>`` (opération privilégiée).
+
+        L'élévation et l'autorisation sont assurées par ``pkexec`` (Polkit) ;
+        aucune vérification Polkit explicite n'est faite ici.
 
         Args:
-            action: ID de l'action Polkit.
+            args: Arguments passés à ``samba-tool`` (ex. ``("user", "delete", name)``).
 
         Raises:
-            PermissionError: si l'action est refusée par Polkit.
+            RuntimeError: si la commande ``samba-tool`` échoue.
         """
-        if not self._polkit.check_authorization(action):
-            raise PermissionError(f"Action refusée par Polkit: {action}")
+        command = ["pkexec", "samba-tool", *args]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            # On ne journalise que la sous-commande (args[:2]) pour ne pas
+            # divulguer de secret (mot de passe, e-mail) passé en argument.
+            operation = " ".join(args[:2])
+            logger.error(
+                "samba-tool %s a échoué: code=%s stderr=%s",
+                operation,
+                exc.returncode,
+                exc.stderr,
+            )
+            raise RuntimeError(f"Commande samba-tool échouée: {operation}") from exc
 
     def _user_dn(self, username: str) -> str:
         """Construit le DN d'un utilisateur dans le conteneur par défaut."""
@@ -130,14 +133,11 @@ class ADService:
     def create_user(
         self, username: str, password: str, *, display_name: str = "", email: str = ""
     ) -> ADUser:
-        """Crée un utilisateur dans le domaine.
-
-        Vérifie l'autorisation Polkit
-        (``org.fenixserver.ad.create-user``) AVANT toute action.
+        """Crée un utilisateur dans le domaine via ``samba-tool user create``.
 
         Args:
             username: Identifiant de connexion (``sAMAccountName``).
-            password: Mot de passe initial (positionné via ``samba-tool``).
+            password: Mot de passe initial.
             display_name: Nom affiché ; déduit de ``username`` si vide.
             email: Adresse e-mail principale, optionnelle.
 
@@ -145,71 +145,30 @@ class ADService:
             L'utilisateur créé.
 
         Raises:
-            PermissionError: si l'action est refusée par Polkit.
-            RuntimeError: en cas d'erreur LDAP ou de définition du mot de passe.
+            RuntimeError: si la commande ``samba-tool`` échoue.
         """
-        self._authorize(POLKIT_ACTION_CREATE_USER)
-        dn = self._user_dn(username)
-        attributes: dict[str, object] = {
-            "sAMAccountName": username,
-            "displayName": display_name or username,
-            "userAccountControl": str(_UF_NORMAL_ACCOUNT),
-        }
+        args = ["user", "create", username, password]
+        if display_name:
+            args.append(f"--given-name={display_name}")
         if email:
-            attributes["mail"] = email
-
-        self._ldap.add(dn, _USER_OBJECT_CLASSES, attributes)
-        if password:
-            self._set_password(username, password)
+            args.append(f"--mail-address={email}")
+        self._run_samba_tool(*args)
 
         return ADUser(
             username=username,
             display_name=display_name or username,
             email=email,
             enabled=True,
-            dn=dn,
+            dn=self._user_dn(username),
         )
-
-    def _set_password(self, username: str, password: str) -> None:
-        """Définit le mot de passe d'un utilisateur via ``samba-tool`` (élévation pkexec).
-
-        ``samba-tool`` gère l'encodage ``unicodePwd`` et les contraintes de
-        complexité AD ; l'élévation passe par ``pkexec`` (même approche que le
-        flux d'installation de l'update-manager).
-
-        Args:
-            username: Identifiant de l'utilisateur.
-            password: Nouveau mot de passe en clair.
-
-        Raises:
-            RuntimeError: si la commande ``samba-tool`` échoue.
-        """
-        command = [
-            "pkexec",
-            "samba-tool",
-            "user",
-            "setpassword",
-            username,
-            f"--newpassword={password}",
-        ]
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            logger.error(
-                "Définition du mot de passe échouée (%s): code=%s stderr=%s",
-                username,
-                exc.returncode,
-                exc.stderr,
-            )
-            raise RuntimeError(f"Définition du mot de passe échouée pour {username}") from exc
 
     def modify_user(
         self, username: str, *, display_name: str | None = None, email: str | None = None
     ) -> ADUser:
-        """Modifie les attributs d'un utilisateur existant.
+        """Modifie les attributs d'un utilisateur existant (écriture LDAP).
 
-        Vérifie l'autorisation Polkit
-        (``org.fenixserver.ad.modify-user``) AVANT toute action.
+        ``samba-tool`` n'offrant pas d'éditeur d'attributs non interactif, la
+        mise à jour passe par LDAP, sous le bind administrateur authentifié.
 
         Args:
             username: Identifiant de l'utilisateur à modifier.
@@ -220,11 +179,9 @@ class ADService:
             L'utilisateur mis à jour.
 
         Raises:
-            PermissionError: si l'action est refusée par Polkit.
             KeyError: si l'utilisateur est inconnu.
             RuntimeError: en cas d'erreur LDAP.
         """
-        self._authorize(POLKIT_ACTION_MODIFY_USER)
         user = self.get_user(username)
 
         changes: dict[str, object] = {}
@@ -245,22 +202,15 @@ class ADService:
         )
 
     def delete_user(self, username: str) -> None:
-        """Supprime un utilisateur du domaine.
-
-        Vérifie l'autorisation Polkit
-        (``org.fenixserver.ad.delete-user``) AVANT toute action.
+        """Supprime un utilisateur du domaine via ``samba-tool user delete``.
 
         Args:
             username: Identifiant de l'utilisateur à supprimer.
 
         Raises:
-            PermissionError: si l'action est refusée par Polkit.
-            KeyError: si l'utilisateur est inconnu.
-            RuntimeError: en cas d'erreur LDAP.
+            RuntimeError: si la commande ``samba-tool`` échoue.
         """
-        self._authorize(POLKIT_ACTION_DELETE_USER)
-        user = self.get_user(username)
-        self._ldap.delete(user.dn)
+        self._run_samba_tool("user", "delete", username)
 
     # --- groupes ----------------------------------------------------------
 
@@ -297,10 +247,7 @@ class ADService:
         return ADGroup.from_ldap_entry(entries[0])
 
     def create_group(self, name: str, *, description: str = "") -> ADGroup:
-        """Crée un groupe dans le domaine.
-
-        Vérifie l'autorisation Polkit
-        (``org.fenixserver.ad.create-group``) AVANT toute action.
+        """Crée un groupe dans le domaine via ``samba-tool group add``.
 
         Args:
             name: Nom du groupe.
@@ -310,35 +257,24 @@ class ADService:
             Le groupe créé.
 
         Raises:
-            PermissionError: si l'action est refusée par Polkit.
-            RuntimeError: en cas d'erreur LDAP.
+            RuntimeError: si la commande ``samba-tool`` échoue.
         """
-        self._authorize(POLKIT_ACTION_CREATE_GROUP)
-        dn = self._group_dn(name)
-        attributes: dict[str, object] = {"sAMAccountName": name}
+        args = ["group", "add", name]
         if description:
-            attributes["description"] = description
-
-        self._ldap.add(dn, _GROUP_OBJECT_CLASSES, attributes)
-        return ADGroup(name=name, description=description, dn=dn)
+            args.append(f"--description={description}")
+        self._run_samba_tool(*args)
+        return ADGroup(name=name, description=description, dn=self._group_dn(name))
 
     def delete_group(self, name: str) -> None:
-        """Supprime un groupe du domaine.
-
-        Vérifie l'autorisation Polkit
-        (``org.fenixserver.ad.delete-group``) AVANT toute action.
+        """Supprime un groupe du domaine via ``samba-tool group delete``.
 
         Args:
             name: Nom du groupe à supprimer.
 
         Raises:
-            PermissionError: si l'action est refusée par Polkit.
-            KeyError: si le groupe est inconnu.
-            RuntimeError: en cas d'erreur LDAP.
+            RuntimeError: si la commande ``samba-tool`` échoue.
         """
-        self._authorize(POLKIT_ACTION_DELETE_GROUP)
-        group = self.get_group(name)
-        self._ldap.delete(group.dn)
+        self._run_samba_tool("group", "delete", name)
 
     # --- domaine ----------------------------------------------------------
 
