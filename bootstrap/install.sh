@@ -112,8 +112,9 @@ EOF
 
 install_system_deps() {
     export DEBIAN_FRONTEND=noninteractive
-    if apt-get install -y python3-pip packagekit python3-dasbus; then
-        ok "Dépendances système installées (python3-pip, packagekit, python3-dasbus)"
+    # Sur Debian 13, policykit-1 est obsolète : remplacé par polkitd + pkexec.
+    if apt-get install -y python3-pip packagekit python3-dasbus polkitd pkexec; then
+        ok "Dépendances système installées (python3-pip, packagekit, python3-dasbus, polkitd, pkexec)"
     else
         ko "Échec de l'installation des dépendances système"
     fi
@@ -257,6 +258,15 @@ provision_samba_ad() {
         ok "Service samba-ad-dc activé et démarré"
     else
         ko "Échec de l'activation de samba-ad-dc"
+    fi
+
+    # Bind LDAP simple sans TLS (utilisé localement par l'AD Manager) : on relâche
+    # l'exigence d'authentification forte, puis on redémarre le DC pour l'appliquer.
+    if sed -i '/^\[global\]/a\	ldap server require strong auth = no' /etc/samba/smb.conf \
+        && systemctl restart samba-ad-dc; then
+        ok "smb.conf : 'ldap server require strong auth = no' ajouté + samba-ad-dc redémarré"
+    else
+        ko "Échec de la configuration 'ldap server require strong auth = no'"
     fi
 }
 
