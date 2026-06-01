@@ -83,3 +83,34 @@ def test_connexion_initiale_en_echec_non_fatale(ad_service: MagicMock):
 
 def test_style_global_applique(window: ADManagerWindow):
     assert window.styleSheet() == ThemeManager().global_style()
+
+
+# --- Samba non configuré ---------------------------------------------------
+
+
+@pytest.mark.parametrize("error", [ValueError("pas de realm"), FileNotFoundError("smb.conf")])
+def test_samba_non_configure_avertit_et_desactive_les_onglets(error: Exception):
+    with patch.object(mw.LDAPService, "from_smb_conf", side_effect=error), patch(
+        "main_window.QMessageBox.warning"
+    ) as warning:
+        window = ADManagerWindow(ThemeManager())
+
+    warning.assert_called_once()
+    assert "Samba non configuré" in warning.call_args.args[2]
+    assert window._samba_configured is False
+
+    tabs = window._tabs
+    # L'onglet Domaine reste accessible ; les autres sont désactivés.
+    assert tabs.isTabEnabled(tabs.indexOf(window.domain_tab)) is True
+    assert tabs.isTabEnabled(tabs.indexOf(window.users_tab)) is False
+    assert tabs.isTabEnabled(tabs.indexOf(window.groups_tab)) is False
+    assert tabs.currentWidget() is window.domain_tab
+
+
+def test_samba_non_configure_domaine_affiche_non_configure():
+    with patch.object(mw.LDAPService, "from_smb_conf", side_effect=ValueError), patch(
+        "main_window.QMessageBox.warning"
+    ):
+        window = ADManagerWindow(ThemeManager())
+    # L'onglet Domaine s'ouvre sans erreur via le service de repli.
+    assert window.domain_tab._value_samba.text() == "non configuré"
