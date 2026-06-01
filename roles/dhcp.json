@@ -1,0 +1,12 @@
+{
+    "id": "dhcp",
+    "name": "DHCP",
+    "description": "Baux, plages et réservations DHCP via Kea",
+    "service_name": "kea-dhcp4-server",
+    "service_type": "systemd",
+    "app": "dhcp-manager",
+    "install": {
+        "type": "deb",
+        "asset_pattern": "*.deb"
+    }
+}
