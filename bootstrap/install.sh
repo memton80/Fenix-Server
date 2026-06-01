@@ -197,6 +197,16 @@ install_desktop_entries() {
     install_one_desktop_entry "update-manager" "fenix-update-manager.desktop" "fenix-update-manager"
     install_one_desktop_entry "server-manager" "fenix-server-manager.desktop" "fenix-server-manager"
     install_one_desktop_entry "ad-manager" "fenix-ad-manager.desktop" "fenix-ad-manager"
+
+    # Policy Polkit de l'AD Manager (create/modify/delete user & group).
+    local ad_policy="$PROJECT_ROOT/ad-manager/polkit/org.fenixserver.ad.policy"
+    local polkit_dir="/usr/share/polkit-1/actions"
+    mkdir -p "$polkit_dir"
+    if [[ -f "$ad_policy" ]] && cp "$ad_policy" "$polkit_dir/"; then
+        ok "Policy Polkit AD Manager installée ($polkit_dir/$(basename "$ad_policy"))"
+    else
+        ko "Échec de l'installation de la policy Polkit AD Manager"
+    fi
 }
 
 # --- configuration du domaine AD (Samba) -----------------------------------
