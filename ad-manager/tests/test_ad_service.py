@@ -1,4 +1,4 @@
-"""Tests pour services.ad_service — LDAPService et Polkit mockés."""
+"""Tests pour services.ad_service — LDAPService et subprocess (pkexec) mockés."""
 
 from __future__ import annotations
 
@@ -28,18 +28,16 @@ def _ldap() -> MagicMock:
     return ldap
 
 
-def _service(*, authorized: bool = True) -> tuple[ADService, MagicMock, MagicMock]:
+def _service() -> tuple[ADService, MagicMock]:
     ldap = _ldap()
-    polkit = MagicMock()
-    polkit.check_authorization.return_value = authorized
-    return ADService(ldap, polkit=polkit), ldap, polkit
+    return ADService(ldap), ldap
 
 
 # --- utilisateurs : lecture ------------------------------------------------
 
 
 def test_list_users_mappe_les_entrees():
-    service, ldap, _ = _service()
+    service, ldap = _service()
     ldap.search.return_value = [
         _entry("CN=jdoe,CN=Users,DC=example,DC=lan", sAMAccountName=["jdoe"], cn=["John"]),
     ]
@@ -51,77 +49,60 @@ def test_list_users_mappe_les_entrees():
 
 
 def test_get_user_inconnu_leve_keyerror():
-    service, ldap, _ = _service()
+    service, ldap = _service()
     ldap.search.return_value = []
     with pytest.raises(KeyError):
         service.get_user("ghost")
 
 
-# --- create_user -----------------------------------------------------------
+# --- create_user (samba-tool) ----------------------------------------------
 
 
-def test_create_user_ajoute_et_definit_le_mot_de_passe():
-    service, ldap, polkit = _service(authorized=True)
+def test_create_user_via_samba_tool():
+    service, ldap = _service()
 
     with patch("subprocess.run") as run:
         user = service.create_user(
             "jdoe", "S3cret!", display_name="John Doe", email="jdoe@example.lan"
         )
 
-    polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_CREATE_USER)
-    dn = "cn=jdoe,cn=Users,dc=example,dc=lan"
-    ldap.add.assert_called_once()
-    assert ldap.add.call_args.args[0] == dn
-    assert ldap.add.call_args.args[1] == ads._USER_OBJECT_CLASSES
-    attributes = ldap.add.call_args.args[2]
-    assert attributes["sAMAccountName"] == "jdoe"
-    assert attributes["displayName"] == "John Doe"
-    assert attributes["mail"] == "jdoe@example.lan"
-    # Plus de unicodePwd LDAP : le mot de passe passe par samba-tool (pkexec).
-    assert "unicodePwd" not in attributes
-    ldap.modify.assert_not_called()
+    # Création déléguée à pkexec samba-tool, aucune écriture LDAP.
+    ldap.add.assert_not_called()
     run.assert_called_once()
     assert run.call_args.args[0] == [
         "pkexec",
         "samba-tool",
         "user",
-        "setpassword",
+        "create",
         "jdoe",
-        "--newpassword=S3cret!",
+        "S3cret!",
+        "--given-name=John Doe",
+        "--mail-address=jdoe@example.lan",
     ]
+    dn = "cn=jdoe,cn=Users,dc=example,dc=lan"
     assert user == ADUser("jdoe", "John Doe", "jdoe@example.lan", True, dn)
 
 
-def test_create_user_sans_mot_de_passe_n_appelle_pas_samba_tool():
-    service, _, _ = _service(authorized=True)
+def test_create_user_minimal_sans_options():
+    service, _ = _service()
     with patch("subprocess.run") as run:
-        service.create_user("jdoe", "")
-    run.assert_not_called()
+        service.create_user("jdoe", "S3cret!")
+    assert run.call_args.args[0] == ["pkexec", "samba-tool", "user", "create", "jdoe", "S3cret!"]
 
 
-def test_create_user_echec_setpassword_leve_runtimeerror():
-    service, _, _ = _service(authorized=True)
+def test_create_user_echec_samba_tool_leve_runtimeerror():
+    service, _ = _service()
     err = subprocess.CalledProcessError(1, ["pkexec", "samba-tool"], stderr="mot de passe faible")
     with patch("subprocess.run", side_effect=err):
-        with pytest.raises(RuntimeError, match="mot de passe"):
+        with pytest.raises(RuntimeError, match="samba-tool"):
             service.create_user("jdoe", "faible")
 
 
-def test_create_user_refuse_par_polkit_leve_permissionerror():
-    service, ldap, polkit = _service(authorized=False)
-    with patch("subprocess.run") as run:
-        with pytest.raises(PermissionError):
-            service.create_user("jdoe", "pw")
-    polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_CREATE_USER)
-    ldap.add.assert_not_called()
-    run.assert_not_called()
-
-
-# --- modify_user -----------------------------------------------------------
+# --- modify_user (LDAP) ----------------------------------------------------
 
 
 def test_modify_user_applique_les_changements():
-    service, ldap, polkit = _service(authorized=True)
+    service, ldap = _service()
     ldap.search.return_value = [
         _entry(
             "CN=jdoe,CN=Users,DC=example,DC=lan",
@@ -133,7 +114,6 @@ def test_modify_user_applique_les_changements():
 
     user = service.modify_user("jdoe", email="new@example.lan")
 
-    polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_MODIFY_USER)
     ldap.modify.assert_called_once_with(
         "CN=jdoe,CN=Users,DC=example,DC=lan", {"mail": "new@example.lan"}
     )
@@ -142,54 +122,43 @@ def test_modify_user_applique_les_changements():
 
 
 def test_modify_user_sans_changement_n_appelle_pas_modify():
-    service, ldap, _ = _service(authorized=True)
+    service, ldap = _service()
     ldap.search.return_value = [_entry("CN=jdoe,DC=x", sAMAccountName=["jdoe"])]
     service.modify_user("jdoe")
     ldap.modify.assert_not_called()
 
 
 def test_modify_user_inconnu_leve_keyerror():
-    service, ldap, _ = _service(authorized=True)
+    service, ldap = _service()
     ldap.search.return_value = []
     with pytest.raises(KeyError):
         service.modify_user("ghost", email="x@y.z")
 
 
-def test_modify_user_refuse_par_polkit():
-    service, ldap, _ = _service(authorized=False)
-    with pytest.raises(PermissionError):
-        service.modify_user("jdoe", email="x@y.z")
-    ldap.search.assert_not_called()
-    ldap.modify.assert_not_called()
+# --- delete_user (samba-tool) ----------------------------------------------
 
 
-# --- delete_user -----------------------------------------------------------
-
-
-def test_delete_user_supprime_le_dn():
-    service, ldap, polkit = _service(authorized=True)
-    ldap.search.return_value = [
-        _entry("CN=jdoe,CN=Users,DC=example,DC=lan", sAMAccountName=["jdoe"])
-    ]
-
-    service.delete_user("jdoe")
-
-    polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_DELETE_USER)
-    ldap.delete.assert_called_once_with("CN=jdoe,CN=Users,DC=example,DC=lan")
-
-
-def test_delete_user_refuse_par_polkit():
-    service, ldap, _ = _service(authorized=False)
-    with pytest.raises(PermissionError):
+def test_delete_user_via_samba_tool():
+    service, ldap = _service()
+    with patch("subprocess.run") as run:
         service.delete_user("jdoe")
     ldap.delete.assert_not_called()
+    assert run.call_args.args[0] == ["pkexec", "samba-tool", "user", "delete", "jdoe"]
+
+
+def test_delete_user_echec_leve_runtimeerror():
+    service, _ = _service()
+    err = subprocess.CalledProcessError(1, ["pkexec", "samba-tool"], stderr="introuvable")
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError, match="samba-tool"):
+            service.delete_user("ghost")
 
 
 # --- groupes ---------------------------------------------------------------
 
 
 def test_list_groups_mappe_les_entrees():
-    service, ldap, _ = _service()
+    service, ldap = _service()
     ldap.search.return_value = [
         _entry("CN=admins,DC=example,DC=lan", sAMAccountName=["admins"], description=["Admins"]),
     ]
@@ -198,49 +167,45 @@ def test_list_groups_mappe_les_entrees():
     assert ldap.search.call_args.args[0] == ads._GROUP_FILTER
 
 
-def test_create_group_ajoute_l_entree():
-    service, ldap, polkit = _service(authorized=True)
+def test_create_group_via_samba_tool():
+    service, ldap = _service()
 
-    group = service.create_group("ventes", description="Équipe ventes")
+    with patch("subprocess.run") as run:
+        group = service.create_group("ventes", description="Équipe ventes")
 
-    polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_CREATE_GROUP)
+    ldap.add.assert_not_called()
+    assert run.call_args.args[0] == [
+        "pkexec",
+        "samba-tool",
+        "group",
+        "add",
+        "ventes",
+        "--description=Équipe ventes",
+    ]
     dn = "cn=ventes,cn=Users,dc=example,dc=lan"
-    ldap.add.assert_called_once()
-    assert ldap.add.call_args.args[0] == dn
-    assert ldap.add.call_args.args[1] == ads._GROUP_OBJECT_CLASSES
-    assert ldap.add.call_args.args[2]["description"] == "Équipe ventes"
     assert group == ADGroup("ventes", "Équipe ventes", dn)
 
 
-def test_create_group_refuse_par_polkit():
-    service, ldap, _ = _service(authorized=False)
-    with pytest.raises(PermissionError):
+def test_create_group_minimal():
+    service, _ = _service()
+    with patch("subprocess.run") as run:
         service.create_group("ventes")
-    ldap.add.assert_not_called()
+    assert run.call_args.args[0] == ["pkexec", "samba-tool", "group", "add", "ventes"]
 
 
-def test_delete_group_supprime_le_dn():
-    service, ldap, polkit = _service(authorized=True)
-    ldap.search.return_value = [_entry("CN=ventes,DC=example,DC=lan", sAMAccountName=["ventes"])]
-
-    service.delete_group("ventes")
-
-    polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_DELETE_GROUP)
-    ldap.delete.assert_called_once_with("CN=ventes,DC=example,DC=lan")
-
-
-def test_delete_group_inconnu_leve_keyerror():
-    service, ldap, _ = _service(authorized=True)
-    ldap.search.return_value = []
-    with pytest.raises(KeyError):
-        service.delete_group("ghost")
+def test_delete_group_via_samba_tool():
+    service, ldap = _service()
+    with patch("subprocess.run") as run:
+        service.delete_group("ventes")
+    ldap.delete.assert_not_called()
+    assert run.call_args.args[0] == ["pkexec", "samba-tool", "group", "delete", "ventes"]
 
 
 # --- domaine ---------------------------------------------------------------
 
 
 def test_domain_info():
-    service, ldap, _ = _service()
+    service, _ = _service()
     info = service.domain_info()
     assert info["name"] == "example.lan"
     assert info["dc"] == "ldap://example.lan"
@@ -248,6 +213,6 @@ def test_domain_info():
 
 
 def test_domain_info_deconnecte():
-    service, ldap, _ = _service()
+    service, ldap = _service()
     ldap.is_connected.return_value = False
     assert service.domain_info()["samba"] == "déconnecté"
