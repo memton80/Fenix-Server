@@ -1,8 +1,12 @@
 """Service d'activation/désactivation des rôles Fenix Server.
 
 S'appuie sur ``core.roles.RoleRegistry`` pour connaître les rôles et leur état,
-et pilote les services systemd correspondants (start/stop + enable/disable) via
-D-Bus. Toute activation/désactivation passe par Polkit AVANT l'action.
+et pilote les services systemd correspondants (enable/disable + start/stop) via
+``pkexec systemctl`` en ``subprocess``. Toute activation/désactivation passe par
+Polkit AVANT l'action.
+
+L'élévation se fait via ``pkexec`` (même approche que ``install_service`` dans
+l'update-manager) ; l'autorisation Polkit a déjà été vérifiée AVANT l'appel.
 
 Nomenclature Polkit : ``org.fenixserver.server.enable-role`` /
 ``org.fenixserver.server.disable-role``.
@@ -11,10 +15,10 @@ Nomenclature Polkit : ``org.fenixserver.server.enable-role`` /
 from __future__ import annotations
 
 import logging
+import subprocess
 
 from models.role_status import RoleStatus
 
-from core.dbus_helper import get_service_proxy
 from core.polkit import PolkitClient
 from core.roles import RoleRegistry
 
@@ -22,9 +26,6 @@ logger = logging.getLogger(__name__)
 
 POLKIT_ACTION_ENABLE_ROLE = "org.fenixserver.server.enable-role"
 POLKIT_ACTION_DISABLE_ROLE = "org.fenixserver.server.disable-role"
-
-SYSTEMD_SERVICE = "org.freedesktop.systemd1"
-SYSTEMD_OBJECT = "/org/freedesktop/systemd1"
 
 # Suffixes d'unités systemd ; sans suffixe connu, ".service" est ajouté.
 _SYSTEMD_SUFFIXES = (
@@ -37,9 +38,6 @@ _SYSTEMD_SUFFIXES = (
     ".slice",
 )
 _DEFAULT_SYSTEMD_SUFFIX = ".service"
-
-# Mode de remplacement des jobs systemd (cf. StartUnit/StopUnit).
-_JOB_MODE_REPLACE = "replace"
 
 
 def _unit_name(service_name: str) -> str:
@@ -82,7 +80,7 @@ class RoleService:
         ]
 
     def enable_role(self, role_id: str) -> None:
-        """Active un rôle : démarre et active son service systemd.
+        """Active un rôle : active et démarre son unité (``systemctl enable --now``).
 
         Vérifie l'autorisation Polkit
         (``org.fenixserver.server.enable-role``) AVANT toute action.
@@ -93,6 +91,7 @@ class RoleService:
         Raises:
             PermissionError: si l'action est refusée par Polkit.
             KeyError: si le rôle est inconnu.
+            RuntimeError: si la commande ``systemctl`` échoue.
         """
         role = self._registry.get(role_id)
         if not self._polkit.check_authorization(POLKIT_ACTION_ENABLE_ROLE):
@@ -100,13 +99,10 @@ class RoleService:
 
         unit = _unit_name(role.service_name)
         logger.info("Activation du rôle %s (unité %s)", role_id, unit)
-        manager = get_service_proxy(SYSTEMD_SERVICE, SYSTEMD_OBJECT)
-        # Activation persistante (enable) puis démarrage immédiat (start).
-        manager.EnableUnitFiles([unit], False, True)
-        manager.StartUnit(unit, _JOB_MODE_REPLACE)
+        self._run_systemctl("enable", unit)
 
     def disable_role(self, role_id: str) -> None:
-        """Désactive un rôle : arrête et désactive son service systemd.
+        """Désactive un rôle : arrête et désactive son unité (``systemctl disable --now``).
 
         Vérifie l'autorisation Polkit
         (``org.fenixserver.server.disable-role``) AVANT toute action.
@@ -117,6 +113,7 @@ class RoleService:
         Raises:
             PermissionError: si l'action est refusée par Polkit.
             KeyError: si le rôle est inconnu.
+            RuntimeError: si la commande ``systemctl`` échoue.
         """
         role = self._registry.get(role_id)
         if not self._polkit.check_authorization(POLKIT_ACTION_DISABLE_ROLE):
@@ -124,7 +121,29 @@ class RoleService:
 
         unit = _unit_name(role.service_name)
         logger.info("Désactivation du rôle %s (unité %s)", role_id, unit)
-        manager = get_service_proxy(SYSTEMD_SERVICE, SYSTEMD_OBJECT)
-        # Arrêt immédiat (stop) puis désactivation persistante (disable).
-        manager.StopUnit(unit, _JOB_MODE_REPLACE)
-        manager.DisableUnitFiles([unit], False)
+        self._run_systemctl("disable", unit)
+
+    def _run_systemctl(self, verb: str, unit: str) -> None:
+        """Exécute ``pkexec systemctl <verb> --now <unit>`` (action privilégiée).
+
+        L'élévation se fait via ``pkexec`` ; l'autorisation Polkit a déjà été
+        vérifiée par l'appelant (jamais après l'action).
+
+        Args:
+            verb: ``"enable"`` ou ``"disable"``.
+            unit: Nom de l'unité systemd, ex. ``"smbd.service"``.
+
+        Raises:
+            RuntimeError: si la commande ``systemctl`` échoue.
+        """
+        command = ["pkexec", "systemctl", verb, "--now", unit]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            logger.error(
+                "Commande systemctl échouée (%s): code=%s stderr=%s",
+                " ".join(command),
+                exc.returncode,
+                exc.stderr,
+            )
+            raise RuntimeError(f"Commande systemctl échouée (code {exc.returncode})") from exc
