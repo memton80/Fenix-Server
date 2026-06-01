@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 from services.ad_service import ADService
 from services.ldap_service import LDAPService
 from widgets.domain_tab import DomainTab
@@ -19,6 +29,48 @@ WINDOW_TITLE = "Fenix Server — Gestionnaire AD"
 WINDOW_ICON_NAME = "system-users"
 
 _UNCONFIGURED_MESSAGE = "Samba non configuré — veuillez d'abord configurer un domaine AD."
+_DEFAULT_ADMIN = "Administrator"
+
+
+class LoginDialog(QDialog):
+    """Dialogue de connexion au domaine (utilisateur + mot de passe)."""
+
+    def __init__(self, theme: ThemeManager, parent: QWidget | None = None) -> None:
+        """Initialise le dialogue.
+
+        Args:
+            theme: Gestionnaire de thème pour les styles.
+            parent: Widget parent optionnel.
+        """
+        super().__init__(parent)
+        self._theme = theme
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        """Construit le formulaire (utilisateur, mot de passe)."""
+        self.setWindowTitle("Connexion au domaine")
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self._edit_user = QLineEdit(_DEFAULT_ADMIN, self)
+        self._edit_password = QLineEdit(self)
+        self._edit_password.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Utilisateur", self._edit_user)
+        form.addRow("Mot de passe", self._edit_password)
+        layout.addLayout(form)
+
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
+        )
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        layout.addWidget(self._buttons)
+
+        self.setStyleSheet(self._theme.global_style())
+
+    def credentials(self) -> tuple[str, str]:
+        """Retourne les identifiants saisis (``utilisateur``, ``mot de passe``)."""
+        return self._edit_user.text().strip(), self._edit_password.text()
 
 
 class _OfflineADService:
@@ -72,18 +124,48 @@ class ADManagerWindow(QMainWindow):
     def _build_service(self) -> ADService:
         """Construit le service AD à partir de la configuration Samba locale.
 
-        La connexion LDAP est tentée au démarrage ; un échec est seulement
-        journalisé (les onglets afficheront l'erreur), l'app reste utilisable.
+        Demande les identifiants de connexion (``LoginDialog``) et tente le bind
+        LDAP avec ceux-ci. En cas d'échec, les identifiants sont redemandés ;
+        l'annulation du dialogue ouvre l'app sans connexion établie.
 
         Returns:
             Le service AD prêt à être utilisé par les onglets.
+
+        Raises:
+            FileNotFoundError: si ``smb.conf`` est absent.
+            ValueError: si le domaine n'est pas configuré (realm manquant).
         """
         ldap = LDAPService.from_smb_conf()
-        try:
-            ldap.connect()
-        except RuntimeError as exc:
-            logger.warning("Connexion LDAP initiale impossible: %s", exc)
+        while True:
+            credentials = self._prompt_credentials()
+            if credentials is None:
+                logger.info("Connexion au domaine annulée par l'utilisateur")
+                break
+            username, password = credentials
+            ldap.set_credentials(bind_dn=username, password=password)
+            try:
+                ldap.connect()
+                break
+            except RuntimeError as exc:
+                logger.warning("Connexion LDAP échouée: %s", exc)
+                QMessageBox.warning(
+                    self,
+                    "Connexion échouée",
+                    "Échec de la connexion au domaine. Vérifiez vos identifiants.",
+                )
         return ADService(ldap)
+
+    def _prompt_credentials(self) -> tuple[str, str] | None:
+        """Affiche le dialogue de connexion et retourne les identifiants saisis.
+
+        Returns:
+            Le couple ``(utilisateur, mot de passe)``, ou ``None`` si le dialogue
+            est annulé.
+        """
+        dialog = LoginDialog(self._theme, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.credentials()
 
     def _build_ui(self) -> None:
         """Construit la barre d'onglets et instancie les trois onglets."""

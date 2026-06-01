@@ -51,6 +51,16 @@ def test_connect_etablit_la_connexion():
     assert svc.is_connected() is True
 
 
+def test_set_credentials_utilise_au_bind():
+    svc = LDAPService("ldap://dc", "dc=x")
+    svc.set_credentials(bind_dn="Administrator", password="pw")
+    with patch.object(ls, "Server"), patch.object(ls, "Connection") as conn_cls:
+        conn_cls.return_value.bound = True
+        svc.connect()
+    assert conn_cls.call_args.kwargs["user"] == "Administrator"
+    assert conn_cls.call_args.kwargs["password"] == "pw"
+
+
 def test_connect_echec_leve_runtimeerror():
     svc = LDAPService("ldap://dc", "dc=x")
     with patch.object(ls, "Server"), patch.object(ls, "Connection", side_effect=Exception("boom")):
