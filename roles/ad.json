@@ -4,5 +4,9 @@
     "description": "Domaine, utilisateurs et groupes via Samba 4",
     "service_name": "smbd",
     "service_type": "systemd",
-    "app": "ad-manager"
+    "app": "ad-manager",
+    "install": {
+        "type": "deb",
+        "asset_pattern": "*.deb"
+    }
 }
