@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from models.ad_group import ADGroup
@@ -59,10 +60,13 @@ def test_get_user_inconnu_leve_keyerror():
 # --- create_user -----------------------------------------------------------
 
 
-def test_create_user_ajoute_et_positionne_le_mot_de_passe():
+def test_create_user_ajoute_et_definit_le_mot_de_passe():
     service, ldap, polkit = _service(authorized=True)
 
-    user = service.create_user("jdoe", "S3cret!", display_name="John Doe", email="jdoe@example.lan")
+    with patch("subprocess.run") as run:
+        user = service.create_user(
+            "jdoe", "S3cret!", display_name="John Doe", email="jdoe@example.lan"
+        )
 
     polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_CREATE_USER)
     dn = "cn=jdoe,cn=Users,dc=example,dc=lan"
@@ -73,17 +77,44 @@ def test_create_user_ajoute_et_positionne_le_mot_de_passe():
     assert attributes["sAMAccountName"] == "jdoe"
     assert attributes["displayName"] == "John Doe"
     assert attributes["mail"] == "jdoe@example.lan"
-    # Mot de passe positionné via unicodePwd (UTF-16-LE entre guillemets).
-    ldap.modify.assert_called_once_with(dn, {"unicodePwd": ['"S3cret!"'.encode("utf-16-le")]})
+    # Plus de unicodePwd LDAP : le mot de passe passe par samba-tool (pkexec).
+    assert "unicodePwd" not in attributes
+    ldap.modify.assert_not_called()
+    run.assert_called_once()
+    assert run.call_args.args[0] == [
+        "pkexec",
+        "samba-tool",
+        "user",
+        "setpassword",
+        "jdoe",
+        "--newpassword=S3cret!",
+    ]
     assert user == ADUser("jdoe", "John Doe", "jdoe@example.lan", True, dn)
+
+
+def test_create_user_sans_mot_de_passe_n_appelle_pas_samba_tool():
+    service, _, _ = _service(authorized=True)
+    with patch("subprocess.run") as run:
+        service.create_user("jdoe", "")
+    run.assert_not_called()
+
+
+def test_create_user_echec_setpassword_leve_runtimeerror():
+    service, _, _ = _service(authorized=True)
+    err = subprocess.CalledProcessError(1, ["pkexec", "samba-tool"], stderr="mot de passe faible")
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError, match="mot de passe"):
+            service.create_user("jdoe", "faible")
 
 
 def test_create_user_refuse_par_polkit_leve_permissionerror():
     service, ldap, polkit = _service(authorized=False)
-    with pytest.raises(PermissionError):
-        service.create_user("jdoe", "pw")
+    with patch("subprocess.run") as run:
+        with pytest.raises(PermissionError):
+            service.create_user("jdoe", "pw")
     polkit.check_authorization.assert_called_once_with(ads.POLKIT_ACTION_CREATE_USER)
     ldap.add.assert_not_called()
+    run.assert_not_called()
 
 
 # --- modify_user -----------------------------------------------------------

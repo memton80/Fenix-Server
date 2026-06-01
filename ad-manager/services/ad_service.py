@@ -12,6 +12,7 @@ Nomenclature Polkit : ``org.fenixserver.ad.<action>``
 from __future__ import annotations
 
 import logging
+import subprocess
 
 from models.ad_group import ADGroup
 from models.ad_user import ADUser
@@ -56,20 +57,6 @@ _FILTER_ESCAPE = {"*": "\\2a", "(": "\\28", ")": "\\29", "\\": "\\5c", "\x00": "
 def _escape_filter(value: str) -> str:
     """Échappe une valeur destinée à un filtre LDAP (RFC 4515)."""
     return "".join(_FILTER_ESCAPE.get(char, char) for char in value)
-
-
-def _encode_password(password: str) -> bytes:
-    """Encode un mot de passe au format ``unicodePwd`` attendu par Active Directory.
-
-    AD exige le mot de passe entouré de guillemets et encodé en UTF-16-LE.
-
-    Args:
-        password: Mot de passe en clair.
-
-    Returns:
-        Le mot de passe encodé prêt pour l'attribut ``unicodePwd``.
-    """
-    return f'"{password}"'.encode("utf-16-le")
 
 
 class ADService:
@@ -150,7 +137,7 @@ class ADService:
 
         Args:
             username: Identifiant de connexion (``sAMAccountName``).
-            password: Mot de passe initial (positionné via ``unicodePwd``).
+            password: Mot de passe initial (positionné via ``samba-tool``).
             display_name: Nom affiché ; déduit de ``username`` si vide.
             email: Adresse e-mail principale, optionnelle.
 
@@ -159,7 +146,7 @@ class ADService:
 
         Raises:
             PermissionError: si l'action est refusée par Polkit.
-            RuntimeError: en cas d'erreur LDAP.
+            RuntimeError: en cas d'erreur LDAP ou de définition du mot de passe.
         """
         self._authorize(POLKIT_ACTION_CREATE_USER)
         dn = self._user_dn(username)
@@ -173,7 +160,7 @@ class ADService:
 
         self._ldap.add(dn, _USER_OBJECT_CLASSES, attributes)
         if password:
-            self._ldap.modify(dn, {"unicodePwd": [_encode_password(password)]})
+            self._set_password(username, password)
 
         return ADUser(
             username=username,
@@ -182,6 +169,39 @@ class ADService:
             enabled=True,
             dn=dn,
         )
+
+    def _set_password(self, username: str, password: str) -> None:
+        """Définit le mot de passe d'un utilisateur via ``samba-tool`` (élévation pkexec).
+
+        ``samba-tool`` gère l'encodage ``unicodePwd`` et les contraintes de
+        complexité AD ; l'élévation passe par ``pkexec`` (même approche que le
+        flux d'installation de l'update-manager).
+
+        Args:
+            username: Identifiant de l'utilisateur.
+            password: Nouveau mot de passe en clair.
+
+        Raises:
+            RuntimeError: si la commande ``samba-tool`` échoue.
+        """
+        command = [
+            "pkexec",
+            "samba-tool",
+            "user",
+            "setpassword",
+            username,
+            f"--newpassword={password}",
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            logger.error(
+                "Définition du mot de passe échouée (%s): code=%s stderr=%s",
+                username,
+                exc.returncode,
+                exc.stderr,
+            )
+            raise RuntimeError(f"Définition du mot de passe échouée pour {username}") from exc
 
     def modify_user(
         self, username: str, *, display_name: str | None = None, email: str | None = None
