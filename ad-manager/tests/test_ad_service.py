@@ -90,12 +90,30 @@ def test_create_user_minimal_sans_options():
     assert run.call_args.args[0] == ["pkexec", "samba-tool", "user", "create", "jdoe", "S3cret!"]
 
 
-def test_create_user_echec_samba_tool_leve_runtimeerror():
+def test_create_user_echec_generique_leve_runtimeerror():
     service, _ = _service()
-    err = subprocess.CalledProcessError(1, ["pkexec", "samba-tool"], stderr="mot de passe faible")
+    err = subprocess.CalledProcessError(1, ["pkexec", "samba-tool"], stderr="connexion refusée")
     with patch("subprocess.run", side_effect=err):
-        with pytest.raises(RuntimeError, match="samba-tool"):
+        with pytest.raises(RuntimeError, match="Commande samba-tool échouée"):
             service.create_user("jdoe", "faible")
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "ERROR: Failed to set password: Password does not meet requirements",
+        "Password value check failed: complexity not met",
+        "check_password_restrictions: the password does not meet the policy",
+    ],
+)
+def test_create_user_politique_mot_de_passe_message_clair(stderr: str):
+    service, _ = _service()
+    err = subprocess.CalledProcessError(1, ["pkexec", "samba-tool"], stderr=stderr)
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError) as excinfo:
+            service.create_user("jdoe", "weak")
+    assert str(excinfo.value) == ads._PASSWORD_POLICY_MESSAGE
+    assert "8 caractères minimum" in str(excinfo.value)
 
 
 # --- modify_user (LDAP) ----------------------------------------------------

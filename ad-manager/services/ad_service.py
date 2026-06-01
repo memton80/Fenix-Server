@@ -44,6 +44,15 @@ _USERS_CONTAINER = "cn=Users"
 # pour éviter toute injection via un nom d'utilisateur/groupe.
 _FILTER_ESCAPE = {"*": "\\2a", "(": "\\28", ")": "\\29", "\\": "\\5c", "\x00": "\\00"}
 
+# Indices, dans la sortie d'erreur de samba-tool, d'un rejet lié à la politique
+# de mot de passe AD (messages en anglais).
+_PASSWORD_POLICY_HINTS = ("password", "complexity", "policy")
+_PASSWORD_POLICY_MESSAGE = (
+    "Le mot de passe ne respecte pas la politique de complexité AD :\n"
+    "- 8 caractères minimum\n"
+    "- Majuscule, minuscule, chiffre et caractère spécial requis"
+)
+
 
 def _escape_filter(value: str) -> str:
     """Échappe une valeur destinée à un filtre LDAP (RFC 4515)."""
@@ -71,7 +80,8 @@ class ADService:
             args: Arguments passés à ``samba-tool`` (ex. ``("user", "delete", name)``).
 
         Raises:
-            RuntimeError: si la commande ``samba-tool`` échoue.
+            RuntimeError: si la commande ``samba-tool`` échoue. Un échec lié à
+                la politique de mot de passe donne un message d'aide explicite.
         """
         command = ["pkexec", "samba-tool", *args]
         try:
@@ -86,6 +96,9 @@ class ADService:
                 exc.returncode,
                 exc.stderr,
             )
+            stderr = (exc.stderr or "").lower()
+            if any(hint in stderr for hint in _PASSWORD_POLICY_HINTS):
+                raise RuntimeError(_PASSWORD_POLICY_MESSAGE) from exc
             raise RuntimeError(f"Commande samba-tool échouée: {operation}") from exc
 
     def _user_dn(self, username: str) -> str:
