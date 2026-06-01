@@ -6,8 +6,9 @@ sont déléguées à ``samba-tool dns`` exécuté via ``pkexec`` (même approche
 l'élévation et l'autorisation sont gérées par pkexec/Polkit, sans vérification
 Polkit explicite dans le code.
 
-Le serveur visé est le contrôleur de domaine local (``127.0.0.1``) ; ``pkexec``
-exécute ``samba-tool`` en root, qui s'authentifie via le compte machine du DC.
+Le serveur visé est le contrôleur de domaine local (``127.0.0.1``). L'authentification
+auprès de ``samba-tool`` se fait avec les identifiants saisis au démarrage
+(``LoginDialog``), injectés dans chaque commande via ``-U <user>%<password>``.
 
 Conformément aux règles d'architecture, la sortie de ``samba-tool`` n'est pas
 parsée pour l'AD/LDAP ; ici le parsing concerne uniquement ``dns zonelist`` /
@@ -35,13 +36,32 @@ _ZONE_ROOT = "@"
 class DnsService:
     """Expose les opérations DNS (zones, enregistrements A/CNAME/PTR)."""
 
-    def __init__(self, server: str = DNS_SERVER) -> None:
+    def __init__(
+        self, server: str = DNS_SERVER, *, username: str = "", password: str = ""
+    ) -> None:
         """Initialise le service DNS.
 
         Args:
             server: Adresse du serveur DNS Samba visé (DC local par défaut).
+            username: Utilisateur AD pour l'authentification ``samba-tool``
+                (option ``-U``). Vide pour s'appuyer sur l'authentification par
+                défaut (compte machine / Kerberos).
+            password: Mot de passe associé à ``username``.
         """
         self._server = server
+        self._username = username
+        self._password = password
+
+    def _credentials_args(self) -> list[str]:
+        """Construit les arguments d'authentification ``samba-tool`` (``-U``).
+
+        Returns:
+            ``["-U", "<user>%<password>"]`` si un utilisateur est défini, sinon
+            une liste vide (authentification par défaut).
+        """
+        if not self._username:
+            return []
+        return ["-U", f"{self._username}%{self._password}"]
 
     def _run_samba_dns(self, *args: str) -> str:
         """Exécute ``pkexec samba-tool dns <args>`` (opération privilégiée).
@@ -59,10 +79,12 @@ class DnsService:
         Raises:
             RuntimeError: si la commande ``samba-tool`` échoue.
         """
-        command = ["pkexec", "samba-tool", "dns", *args]
+        command = ["pkexec", "samba-tool", "dns", *args, *self._credentials_args()]
         try:
             result = subprocess.run(command, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
+            # On ne journalise que la sous-commande (args[:2]) : les identifiants
+            # passés via -U ne sont jamais inclus dans le log.
             operation = " ".join(args[:2])
             logger.error(
                 "samba-tool dns %s a échoué: code=%s stderr=%s",
