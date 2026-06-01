@@ -511,8 +511,10 @@ provision_samba_ad() {
 
 # --- service DHCP (Kea) -----------------------------------------------------
 
-# Installe Kea via apt et active le serveur DHCPv4. Le Control Agent (API REST
-# locale, port 8000) utilisé par le DHCP Manager est activé en best-effort.
+# Installe Kea via apt, active le serveur DHCPv4, puis génère un mot de passe
+# d'API, configure le Control Agent (auth HTTP basic, API REST locale port 8000)
+# et le démarre. Le mot de passe est partagé avec le DHCP Manager via
+# /etc/kea/kea-api-password.
 install_kea() {
     export DEBIAN_FRONTEND=noninteractive
     if run_with_progress "Service DHCP (Kea)" \
@@ -531,11 +533,75 @@ install_kea() {
     fi
 
     # Control Agent : expose l'API REST locale (port 8000) consommée par le
-    # DHCP Manager. Non bloquant si l'unité est absente ou non configurée.
-    if systemctl enable --now kea-ctrl-agent 2> /dev/null; then
+    # DHCP Manager, protégée par authentification HTTP basic.
+    local pw_file="/etc/kea/kea-api-password"
+    local ca_conf="/etc/kea/kea-ctrl-agent.conf"
+    local api_user="fenix"
+    local api_password
+    api_password="$(openssl rand -hex 16)"
+
+    mkdir -p /etc/kea
+
+    # Secret partagé entre le Control Agent (serveur) et le DHCP Manager (client).
+    # Écrit sans saut de ligne final pour correspondre exactement à la lecture
+    # côté app (KeaService lit puis .strip()).
+    if printf '%s' "$api_password" > "$pw_file"; then
+        # Le démon kea-ctrl-agent tourne sous l'utilisateur _kea : il doit pouvoir
+        # lire le password-file. On garde donc root comme propriétaire avec une
+        # lecture réservée au groupe _kea (640) plutôt qu'un strict 600 root, qui
+        # empêcherait l'agent de lire le secret. Repli en 600 root si _kea absent.
+        if chown root:_kea "$pw_file" 2> /dev/null; then
+            chmod 640 "$pw_file"
+        else
+            chown root:root "$pw_file"
+            chmod 600 "$pw_file"
+        fi
+        ok "Mot de passe API Kea généré ($pw_file)"
+    else
+        ko "Échec de l'écriture du mot de passe API Kea ($pw_file)"
+        return
+    fi
+
+    # Configuration du Control Agent : écoute locale sur 8000 + authentification
+    # basic dont le mot de passe est lu depuis pw_file, et socket de contrôle
+    # vers le serveur DHCPv4.
+    if cat > "$ca_conf" <<EOF
+{
+  "Control-agent": {
+    "http-host": "127.0.0.1",
+    "http-port": 8000,
+    "authentication": {
+      "type": "basic",
+      "realm": "kea-control-agent",
+      "directory": "/etc/kea",
+      "clients": [
+        { "user": "$api_user", "password-file": "kea-api-password" }
+      ]
+    },
+    "control-sockets": {
+      "dhcp4": {
+        "socket-type": "unix",
+        "socket-name": "/run/kea/kea4-ctrl-socket"
+      }
+    },
+    "loggers": [
+      { "name": "kea-ctrl-agent", "severity": "INFO" }
+    ]
+  }
+}
+EOF
+    then
+        chmod 644 "$ca_conf"
+        ok "Control Agent configuré ($ca_conf, auth basic, utilisateur $api_user)"
+    else
+        ko "Échec de la configuration du Control Agent ($ca_conf)"
+        return
+    fi
+
+    if systemctl enable --now kea-ctrl-agent; then
         ok "Service kea-ctrl-agent activé (API REST locale, port 8000)"
     else
-        warn "kea-ctrl-agent non activé — l'API REST (port 8000) devra être configurée manuellement"
+        ko "Échec de l'activation de kea-ctrl-agent"
     fi
 }
 
