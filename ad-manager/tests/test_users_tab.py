@@ -88,15 +88,31 @@ def test_creer_annule_ne_cree_pas(tab: UsersTab, service: MagicMock):
     service.create_user.assert_not_called()
 
 
-def test_creer_erreur_polkit_affiche_messagebox(tab: UsersTab, service: MagicMock):
-    service.create_user.side_effect = PermissionError("refusé par Polkit")
+def test_creer_erreur_affiche_messagebox(tab: UsersTab, service: MagicMock):
+    service.create_user.side_effect = RuntimeError("Commande samba-tool échouée: user create")
     values = {"username": "x", "display_name": "X", "email": "", "password": "p"}
     with patch("widgets.users_tab.UserDialog", return_value=_accepted_dialog(values)), patch(
         "widgets.users_tab.QMessageBox.critical"
     ) as critical:
         tab._btn_create.click()
     critical.assert_called_once()
-    assert "Polkit" in critical.call_args.args[2]
+    assert "samba-tool" in critical.call_args.args[2]
+
+
+def test_creer_message_politique_mot_de_passe_affiche_tel_quel(tab: UsersTab, service: MagicMock):
+    message = (
+        "Le mot de passe ne respecte pas la politique de complexité AD :\n"
+        "- 8 caractères minimum\n"
+        "- Majuscule, minuscule, chiffre et caractère spécial requis"
+    )
+    service.create_user.side_effect = RuntimeError(message)
+    values = {"username": "x", "display_name": "X", "email": "", "password": "weak"}
+    with patch("widgets.users_tab.UserDialog", return_value=_accepted_dialog(values)), patch(
+        "widgets.users_tab.QMessageBox.critical"
+    ) as critical:
+        tab._btn_create.click()
+    # Le message multi-lignes est affiché verbatim dans le QMessageBox.
+    assert critical.call_args.args[2] == message
 
 
 # --- modifier --------------------------------------------------------------
