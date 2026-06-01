@@ -6,6 +6,13 @@ Lancement en dev :
 
 from __future__ import annotations
 
+import sys
+
+from main_window import ADManagerWindow
+from PySide6.QtWidgets import QApplication
+
+from core.theme import ThemeManager
+
 
 def main() -> int:
     """Crée la ``QApplication``, applique le thème, ouvre la fenêtre principale.
@@ -13,10 +20,13 @@ def main() -> int:
     Returns:
         Le code de sortie de la boucle d'événements Qt.
     """
-    raise NotImplementedError
+    app = QApplication(sys.argv)
+    theme = ThemeManager.from_system()
+    theme.apply(app)
+    window = ADManagerWindow(theme)
+    window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    import sys
-
     sys.exit(main())
