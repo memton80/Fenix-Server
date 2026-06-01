@@ -12,13 +12,26 @@ from services.ldap_service import LDAPService
 # --- from_smb_conf ---------------------------------------------------------
 
 
-def test_from_smb_conf_deduit_uri_et_base_dn(tmp_path: Path):
+def test_from_smb_conf_cible_le_dc_local(tmp_path: Path):
     conf = tmp_path / "smb.conf"
     conf.write_text("[global]\n   realm = EXAMPLE.LAN\n   workgroup = EXAMPLE\n", encoding="utf-8")
 
-    svc = LDAPService.from_smb_conf(str(conf))
+    # Realm résolvable : on cible le DC local en boucle locale.
+    with patch.object(ls.socket, "gethostbyname", return_value="10.0.0.1"):
+        svc = LDAPService.from_smb_conf(str(conf))
 
-    assert svc.server_uri == "ldap://example.lan"
+    assert svc.server_uri == "ldap://127.0.0.1"
+    assert svc.base_dn == "dc=example,dc=lan"
+
+
+def test_from_smb_conf_dns_echoue_repli_sur_127_389(tmp_path: Path):
+    conf = tmp_path / "smb.conf"
+    conf.write_text("[global]\n   realm = EXAMPLE.LAN\n", encoding="utf-8")
+
+    with patch.object(ls.socket, "gethostbyname", side_effect=OSError("NXDOMAIN")):
+        svc = LDAPService.from_smb_conf(str(conf))
+
+    assert svc.server_uri == "ldap://127.0.0.1:389"
     assert svc.base_dn == "dc=example,dc=lan"
 
 
@@ -65,7 +78,8 @@ def test_set_credentials_utilise_au_bind():
 def test_set_credentials_compose_le_upn_depuis_le_realm(tmp_path: Path):
     conf = tmp_path / "smb.conf"
     conf.write_text("[global]\n   realm = FENIX.LOCAL\n", encoding="utf-8")
-    svc = LDAPService.from_smb_conf(str(conf))
+    with patch.object(ls.socket, "gethostbyname", return_value="10.0.0.1"):
+        svc = LDAPService.from_smb_conf(str(conf))
     svc.set_credentials("Administrator", "pw")
     assert svc._bind_dn == "Administrator@FENIX.LOCAL"
 
@@ -73,7 +87,8 @@ def test_set_credentials_compose_le_upn_depuis_le_realm(tmp_path: Path):
 def test_set_credentials_upn_deja_qualifie_inchange(tmp_path: Path):
     conf = tmp_path / "smb.conf"
     conf.write_text("[global]\n   realm = FENIX.LOCAL\n", encoding="utf-8")
-    svc = LDAPService.from_smb_conf(str(conf))
+    with patch.object(ls.socket, "gethostbyname", return_value="10.0.0.1"):
+        svc = LDAPService.from_smb_conf(str(conf))
     svc.set_credentials("admin@AUTRE.LOCAL", "pw")
     assert svc._bind_dn == "admin@AUTRE.LOCAL"
 
@@ -81,7 +96,8 @@ def test_set_credentials_upn_deja_qualifie_inchange(tmp_path: Path):
 def test_set_credentials_domaine_backslash_inchange(tmp_path: Path):
     conf = tmp_path / "smb.conf"
     conf.write_text("[global]\n   realm = FENIX.LOCAL\n", encoding="utf-8")
-    svc = LDAPService.from_smb_conf(str(conf))
+    with patch.object(ls.socket, "gethostbyname", return_value="10.0.0.1"):
+        svc = LDAPService.from_smb_conf(str(conf))
     svc.set_credentials("FENIX\\admin", "pw")
     assert svc._bind_dn == "FENIX\\admin"
 

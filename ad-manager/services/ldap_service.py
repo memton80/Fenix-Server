@@ -8,6 +8,7 @@ de domaine sont lus depuis ``/etc/samba/smb.conf``.
 from __future__ import annotations
 
 import logging
+import socket
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,10 +25,40 @@ SMB_CONF_PATH = "/etc/samba/smb.conf"
 # Jeton ldap3 « tous les attributs » pour une recherche.
 _ALL_ATTRIBUTES = "*"
 
+# Adresse du contrôleur de domaine pour une install Fenix standard : le DC tourne
+# sur la machine locale, on s'y connecte donc en boucle locale.
+_LOCAL_DC = "127.0.0.1"
+
 
 def _realm_to_base_dn(realm: str) -> str:
     """Convertit un realm DNS en base DN LDAP (``example.lan`` -> ``dc=example,dc=lan``)."""
     return ",".join(f"dc={part}" for part in realm.split(".") if part)
+
+
+def _local_dc_uri(realm_dns: str) -> str:
+    """Retourne l'URI LDAP du contrôleur de domaine local.
+
+    En install Fenix standard, le DC tourne sur la machine : on s'y connecte via
+    ``127.0.0.1``. Si le realm ne résout pas en DNS (cas fréquent juste après le
+    provisionnement, avant que le DNS du domaine ne soit opérationnel), on bascule
+    sur le repli explicite ``ldap://127.0.0.1:389``.
+
+    Args:
+        realm_dns: Realm en minuscules (ex. ``"fenix.local"``).
+
+    Returns:
+        ``"ldap://127.0.0.1"`` si le realm résout, sinon ``"ldap://127.0.0.1:389"``.
+    """
+    try:
+        socket.gethostbyname(realm_dns)
+    except OSError:
+        logger.warning(
+            "Résolution DNS du realm %s impossible : repli sur le DC local %s:389",
+            realm_dns,
+            _LOCAL_DC,
+        )
+        return f"ldap://{_LOCAL_DC}:389"
+    return f"ldap://{_LOCAL_DC}"
 
 
 class LDAPService:
@@ -95,7 +126,9 @@ class LDAPService:
         """Construit un :class:`LDAPService` depuis la configuration Samba.
 
         Lit le ``realm`` dans la section ``[global]`` de ``smb.conf`` pour en
-        déduire ``server_uri`` (``ldap://<realm>``) et ``base_dn``.
+        déduire ``base_dn`` et le realm Kerberos. Le serveur LDAP visé est le DC
+        local (``127.0.0.1``, install Fenix standard), avec repli sur
+        ``127.0.0.1:389`` si le realm ne résout pas en DNS.
 
         Args:
             path: Chemin du fichier ``smb.conf``.
@@ -123,7 +156,7 @@ class LDAPService:
         # majuscules par convention.
         realm_dns = realm.lower()
         return cls(
-            server_uri=f"ldap://{realm_dns}",
+            server_uri=_local_dc_uri(realm_dns),
             base_dn=_realm_to_base_dn(realm_dns),
             realm=realm.upper(),
         )
