@@ -6,10 +6,12 @@ du Kea Control Agent, écoutant en local sur le port 8000 (accès via la stdlib
 commande JSON ``{"command": ..., "service": ["dhcp4"], "arguments": {...}}`` et
 lit la réponse JSON.
 
-L'API REST est protégée par authentification HTTP basic : le Control Agent et
-le DHCP Manager partagent un mot de passe généré à l'installation et stocké dans
-``/etc/kea/kea-api-password`` (cf. ``bootstrap/install.sh``). Le mot de passe est
-lu au démarrage et envoyé dans l'en-tête ``Authorization`` de chaque requête.
+L'API REST est protégée par authentification HTTP basic : le mot de passe est
+généré à l'installation et stocké dans ``/etc/kea/kea-api-password`` en
+``600 root:root`` (cf. ``bootstrap/install.sh``). Comme ce fichier n'est lisible
+que par root, le DHCP Manager le lit au démarrage via ``pkexec cat`` (pas besoin
+d'ajouter l'utilisateur au groupe ``_kea``) et envoie le mot de passe dans
+l'en-tête ``Authorization`` de chaque requête.
 
 Le contrôle du service système (démarrer / arrêter / redémarrer ``kea-dhcp4``)
 est délégué à ``systemctl`` exécuté via ``pkexec`` (même approche que
@@ -78,22 +80,30 @@ class KeaService:
 
     @staticmethod
     def _read_password(path: str) -> str:
-        """Lit le mot de passe de l'API depuis un fichier (best-effort).
+        """Lit le mot de passe de l'API via ``pkexec cat <path>`` (best-effort).
+
+        Le fichier est en ``600 root:root`` : ``pkexec`` élève les privilèges le
+        temps de le lire, sans relâcher ses permissions ni exiger que l'utilisateur
+        appartienne au groupe ``_kea``.
 
         Args:
             path: Chemin du fichier de mot de passe.
 
         Returns:
             Le mot de passe (espaces/sauts de ligne retirés), ou une chaîne vide
-            si le fichier est absent ou illisible (l'API sera alors appelée sans
-            authentification).
+            si la lecture échoue (l'API sera alors appelée sans authentification).
         """
         try:
-            with open(path, encoding="utf-8") as handle:
-                return handle.read().strip()
-        except OSError as exc:
-            logger.warning("Mot de passe API Kea illisible (%s): %s", path, exc)
+            result = subprocess.run(
+                ["pkexec", "cat", path],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            logger.warning("Lecture du mot de passe API Kea échouée (%s): %s", path, exc)
             return ""
+        return result.stdout.strip()
 
     def _auth_headers(self) -> dict[str, str]:
         """Construit l'en-tête ``Authorization`` (HTTP basic) si possible.

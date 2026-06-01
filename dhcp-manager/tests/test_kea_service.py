@@ -118,10 +118,16 @@ def test_command_envoie_l_entete_authorization():
     assert captured["auth"] == expected
 
 
-def test_mot_de_passe_lu_depuis_le_fichier(tmp_path):
-    pw_file = tmp_path / "kea-api-password"
-    pw_file.write_text("fromfile\n", encoding="utf-8")
-    service = KeaService(password_file=str(pw_file))
+def test_mot_de_passe_lu_via_pkexec_cat():
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="fromfile\n", stderr=""
+    )
+    with patch("subprocess.run", return_value=completed) as run:
+        service = KeaService(password_file="/etc/kea/kea-api-password")
+
+    # Lecture du secret via pkexec cat (fichier 600 root:root).
+    assert run.call_args.args[0] == ["pkexec", "cat", "/etc/kea/kea-api-password"]
+
     captured: dict = {}
 
     def _capture(request, timeout):
@@ -131,13 +137,16 @@ def test_mot_de_passe_lu_depuis_le_fichier(tmp_path):
     with patch("urllib.request.urlopen", side_effect=_capture):
         service.list_leases()
 
-    # Le fichier est lu et débarrassé du saut de ligne final.
+    # Le mot de passe est débarrassé du saut de ligne final avant usage.
     expected = "Basic " + base64.b64encode(b"fenix:fromfile").decode("ascii")
     assert captured["auth"] == expected
 
 
-def test_fichier_absent_aucune_authentification(tmp_path):
-    service = KeaService(password_file=str(tmp_path / "absent"))
+def test_lecture_pkexec_echoue_aucune_authentification():
+    error = subprocess.CalledProcessError(1, ["pkexec"], stderr="refusé")
+    with patch("subprocess.run", side_effect=error):
+        service = KeaService(password_file="/etc/kea/kea-api-password")
+
     captured: dict = {}
 
     def _capture(request, timeout):

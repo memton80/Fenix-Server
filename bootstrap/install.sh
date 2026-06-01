@@ -542,29 +542,22 @@ install_kea() {
 
     mkdir -p /etc/kea
 
-    # Secret partagé entre le Control Agent (serveur) et le DHCP Manager (client).
-    # Écrit sans saut de ligne final pour correspondre exactement à la lecture
-    # côté app (KeaService lit puis .strip()).
+    # Mot de passe destiné au DHCP Manager (client), qui le lit via `pkexec cat`.
+    # Strict 600 root:root : aucun accès hors root, pas besoin du groupe _kea.
+    # Écrit sans saut de ligne final (KeaService applique .strip()).
     if printf '%s' "$api_password" > "$pw_file"; then
-        # Le démon kea-ctrl-agent tourne sous l'utilisateur _kea : il doit pouvoir
-        # lire le password-file. On garde donc root comme propriétaire avec une
-        # lecture réservée au groupe _kea (640) plutôt qu'un strict 600 root, qui
-        # empêcherait l'agent de lire le secret. Repli en 600 root si _kea absent.
-        if chown root:_kea "$pw_file" 2> /dev/null; then
-            chmod 640 "$pw_file"
-        else
-            chown root:root "$pw_file"
-            chmod 600 "$pw_file"
-        fi
-        ok "Mot de passe API Kea généré ($pw_file)"
+        chown root:root "$pw_file"
+        chmod 600 "$pw_file"
+        ok "Mot de passe API Kea généré ($pw_file, 600 root:root)"
     else
         ko "Échec de l'écriture du mot de passe API Kea ($pw_file)"
         return
     fi
 
     # Configuration du Control Agent : écoute locale sur 8000 + authentification
-    # basic dont le mot de passe est lu depuis pw_file, et socket de contrôle
-    # vers le serveur DHCPv4.
+    # basic, et socket de contrôle vers le serveur DHCPv4. Le mot de passe est
+    # inscrit en clair dans la config (lue par le démon kea-ctrl-agent), ce qui
+    # évite de dépendre du fichier 600 root:root réservé au client.
     if cat > "$ca_conf" <<EOF
 {
   "Control-agent": {
@@ -573,9 +566,8 @@ install_kea() {
     "authentication": {
       "type": "basic",
       "realm": "kea-control-agent",
-      "directory": "/etc/kea",
       "clients": [
-        { "user": "$api_user", "password-file": "kea-api-password" }
+        { "user": "$api_user", "password": "$api_password" }
       ]
     },
     "control-sockets": {
@@ -591,7 +583,14 @@ install_kea() {
 }
 EOF
     then
-        chmod 644 "$ca_conf"
+        # La config contient le mot de passe : lecture réservée à root et au
+        # démon Kea (groupe _kea), repli en 600 root si le groupe est absent.
+        if chown root:_kea "$ca_conf" 2> /dev/null; then
+            chmod 640 "$ca_conf"
+        else
+            chown root:root "$ca_conf"
+            chmod 600 "$ca_conf"
+        fi
         ok "Control Agent configuré ($ca_conf, auth basic, utilisateur $api_user)"
     else
         ko "Échec de la configuration du Control Agent ($ca_conf)"
