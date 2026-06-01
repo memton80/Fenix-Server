@@ -89,6 +89,47 @@ print_banner() {
     printf '%s%s%s%s\n\n' "$centered" "$DIM" "$tagline" "$RESET"
 }
 
+# --- écran d'avertissement pré-alpha ---------------------------------------
+
+# Affiche un encadré d'avertissement (jaune/orange) et attend la confirmation
+# de l'utilisateur. Ctrl+C (ou EOF) annule l'installation.
+print_pre_alpha_warning() {
+    local top bottom
+    top="$(box_line '═')"
+
+    # Lignes de contenu : titre + paragraphe d'avertissement, recadrées à
+    # INNER_WIDTH - 2 colonnes. ${#str} compte les caractères en locale UTF-8.
+    local -a lines=(
+        '⚠ AVERTISSEMENT — PRÉ-ALPHA'
+        ''
+        'Fenix Server est en phase pré-alpha. Ce logiciel'
+        'est instable et non destiné à un usage en'
+        'production. Des pertes de données ou des'
+        'dysfonctionnements sont possibles.'
+    )
+
+    printf '\n%s%s╔%s╗%s\n' "$BOLD" "$YELLOW" "$top" "$RESET"
+    local line clen pad spaces
+    for line in "${lines[@]}"; do
+        clen=${#line}
+        pad=$(( INNER_WIDTH - 2 - clen ))
+        (( pad < 0 )) && pad=0
+        printf -v spaces '%*s' "$pad" ''
+        printf '%s%s║%s %s%s%s %s%s║%s\n' \
+            "$BOLD" "$YELLOW" "$RESET" "$BOLD$YELLOW" "$line" "$RESET" "$spaces" \
+            "$BOLD$YELLOW" "$RESET"
+    done
+    printf '%s%s╚%s╝%s\n\n' "$BOLD" "$YELLOW" "$top" "$RESET"
+
+    printf '%s  Appuyez sur [ENTRÉE] pour continuer ou Ctrl+C pour annuler%s\n' \
+        "$YELLOW" "$RESET"
+    if ! read -r; then
+        # EOF (sortie non interactive ou redirigée) : on annule par sécurité.
+        printf '\n%s✗ Installation annulée.%s\n' "$RED$BOLD" "$RESET" >&2
+        exit 130
+    fi
+}
+
 # --- encadrés box-drawing pour les sections --------------------------------
 
 INNER_WIDTH=56
@@ -507,6 +548,7 @@ print_summary() {
 trap cursor_show EXIT INT TERM
 
 main() {
+    print_pre_alpha_warning
     require_root
 
     print_banner
