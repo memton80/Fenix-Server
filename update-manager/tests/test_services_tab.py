@@ -6,9 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core.roles import InstallSpec
 from core.theme import ThemeManager
 from models.update_item import ServiceUpdate
-from widgets.services_tab import ServicesUpdateTab, _CheckWorker
+from widgets.services_tab import ServicesUpdateTab, _CheckWorker, _InstallWorker
 
 
 @pytest.fixture
@@ -120,6 +121,67 @@ def test_update_service_disponible_affiche_info(tab: ServicesUpdateTab):
         tab._btn_update.click()
     info.assert_called_once()
     assert "1.2.0" in info.call_args.args[2]
+
+
+# --- installation : message manuel vs worker -------------------------------
+
+
+def test_update_sans_install_spec_affiche_manuel(tab: ServicesUpdateTab):
+    """Sans InstallSpec, le bouton affiche « Installation manuelle requise »."""
+    tab._on_services_checked(_updates())
+    tab._table.selectRow(0)  # "ad" avec mise à jour, aucune install_spec définie
+    with patch("widgets.services_tab.QMessageBox.information") as info, patch(
+        "widgets.services_tab._InstallWorker"
+    ) as worker_cls:
+        tab._btn_update.click()
+    info.assert_called_once()
+    assert "manuelle" in info.call_args.args[1].lower()
+    worker_cls.assert_not_called()
+
+
+def test_update_avec_install_spec_demarre_worker(tab: ServicesUpdateTab, service):
+    """Avec un InstallSpec, le bouton lance un _InstallWorker."""
+    tab._on_services_checked(_updates())
+    tab.set_services({"ad": ("fenix/ad", "1.0.0")})
+    spec = InstallSpec("deb", "*.deb")
+    tab.set_install_specs({"ad": spec})
+    tab._table.selectRow(0)
+
+    with patch("widgets.services_tab._InstallWorker") as worker_cls:
+        worker = worker_cls.return_value
+        worker.isRunning.return_value = False
+        tab._btn_update.click()
+
+    worker_cls.assert_called_once_with(service, "fenix/ad", spec, tab)
+    worker.start.assert_called_once_with()
+    worker.installed.connect.assert_called_once()
+    worker.failed.connect.assert_called_once()
+
+
+# --- _InstallWorker --------------------------------------------------------
+
+
+def test_install_worker_run_emet_installed(service):
+    spec = InstallSpec("deb", "*.deb")
+    worker = _InstallWorker(service, "fenix/ad", spec)
+    received: list = []
+    worker.installed.connect(lambda: received.append(True))
+
+    worker.run()
+
+    service.install_service.assert_called_once_with("fenix/ad", spec)
+    assert received == [True]
+
+
+def test_install_worker_run_emet_failed_sur_exception(service):
+    service.install_service.side_effect = RuntimeError("boom")
+    worker = _InstallWorker(service, "fenix/ad", InstallSpec("deb", "*.deb"))
+    errors: list = []
+    worker.failed.connect(errors.append)
+
+    worker.run()
+
+    assert errors and "boom" in errors[0]
 
 
 # --- erreur ----------------------------------------------------------------
