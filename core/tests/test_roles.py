@@ -10,7 +10,7 @@ import pytest
 from dasbus.error import DBusError
 
 from core import roles
-from core.roles import Role, RoleRegistry
+from core.roles import InstallSpec, Role, RoleRegistry
 
 
 def _write_role(roles_dir: Path, role_id: str, **overrides) -> None:
@@ -255,4 +255,73 @@ def test_load_service_type_invalide_leve_valueerror(tmp_path: Path):
     _write_role(tmp_path, "ad", service_type="docker")
     registry = RoleRegistry(tmp_path)
     with pytest.raises(ValueError, match="service_type invalide"):
+        registry.load()
+
+
+# --- champ optionnel "install" --------------------------------------------
+
+
+def test_role_sans_install_a_install_none():
+    """Un rôle sans champ install a install=None (rétrocompatible)."""
+    role = Role.from_dict(
+        {
+            "id": "ad",
+            "name": "AD",
+            "description": "Gestion AD",
+            "service_name": "smbd",
+            "service_type": "systemd",
+            "app": "ad-manager",
+        },
+        Path("ad.json"),
+    )
+    assert role.install is None
+
+
+def test_role_avec_install_deb():
+    """Le champ install est parsé en InstallSpec."""
+    role = Role.from_dict(
+        {
+            "id": "ad",
+            "name": "AD",
+            "description": "Gestion AD",
+            "service_name": "smbd",
+            "service_type": "systemd",
+            "app": "ad-manager",
+            "install": {"type": "deb", "asset_pattern": "*.deb"},
+        },
+        Path("ad.json"),
+    )
+    assert role.install == InstallSpec(type="deb", asset_pattern="*.deb")
+
+
+def test_install_spec_type_invalide_leve_valueerror():
+    """Un type d'installation hors {deb, script} lève ValueError."""
+    with pytest.raises(ValueError, match="type d'installation invalide"):
+        InstallSpec.from_dict({"type": "rpm", "asset_pattern": "*.rpm"}, Path("x.json"))
+
+
+def test_install_spec_asset_pattern_manquant_leve_valueerror():
+    """Un asset_pattern absent lève ValueError."""
+    with pytest.raises(ValueError, match="asset_pattern manquant"):
+        InstallSpec.from_dict({"type": "deb"}, Path("x.json"))
+
+
+def test_load_install_non_objet_leve_valueerror(tmp_path: Path):
+    """Un champ install qui n'est pas un objet lève ValueError."""
+    (tmp_path / "ad.json").write_text(
+        json.dumps(
+            {
+                "id": "ad",
+                "name": "AD",
+                "description": "Gestion AD",
+                "service_name": "smbd",
+                "service_type": "systemd",
+                "app": "ad-manager",
+                "install": "deb",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = RoleRegistry(tmp_path)
+    with pytest.raises(ValueError, match="champ 'install' invalide"):
         registry.load()

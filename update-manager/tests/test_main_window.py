@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import pytest
-
-from core.theme import ThemeManager
 from main_window import WINDOW_TITLE, UpdateManagerWindow
 from widgets.services_tab import ServicesUpdateTab
 from widgets.system_tab import SystemUpdateTab
+
+from core.theme import ThemeManager
 
 
 @pytest.fixture

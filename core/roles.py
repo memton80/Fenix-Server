@@ -38,8 +38,60 @@ SERVICE_TYPE_SYSTEMD = "systemd"
 SERVICE_TYPE_DBUS = "dbus"
 _VALID_SERVICE_TYPES = (SERVICE_TYPE_SYSTEMD, SERVICE_TYPE_DBUS)
 
+# Types d'installation supportés pour le champ optionnel "install".
+INSTALL_TYPE_DEB = "deb"
+INSTALL_TYPE_SCRIPT = "script"
+_VALID_INSTALL_TYPES = (INSTALL_TYPE_DEB, INSTALL_TYPE_SCRIPT)
+
 # Champs obligatoires d'un fichier de rôle JSON.
 _REQUIRED_FIELDS = ("id", "name", "description", "service_name", "service_type", "app")
+
+
+@dataclass(frozen=True)
+class InstallSpec:
+    """Modalités d'installation d'un service, depuis le champ JSON ``install``.
+
+    Décrit comment l'Update Manager installe (ou met à jour) un service Fenix à
+    partir d'un asset de release GitHub. Champ optionnel : un rôle sans
+    ``install`` requiert une installation manuelle.
+
+    Attributes:
+        type: Type d'installation : ``"deb"`` (paquet Debian via ``dpkg``) ou
+            ``"script"`` (script shell d'installation).
+        asset_pattern: Motif glob (``fnmatch``) identifiant l'asset à
+            télécharger dans la release, ex. ``"*.deb"`` ou ``"install.sh"``.
+    """
+
+    type: str
+    asset_pattern: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object], source: Path) -> InstallSpec:
+        """Construit un :class:`InstallSpec` depuis le sous-objet ``install``.
+
+        Args:
+            data: Contenu du champ ``install`` du fichier JSON.
+            source: Chemin du fichier source (pour les messages d'erreur).
+
+        Returns:
+            Les modalités d'installation correspondantes.
+
+        Raises:
+            ValueError: si ``type`` est absent/invalide ou si ``asset_pattern``
+                est absent ou vide.
+        """
+        install_type = str(data.get("type", ""))
+        if install_type not in _VALID_INSTALL_TYPES:
+            raise ValueError(
+                f"type d'installation invalide '{install_type}' dans {source} "
+                f"(attendu: {', '.join(_VALID_INSTALL_TYPES)})"
+            )
+
+        asset_pattern = str(data.get("asset_pattern", ""))
+        if not asset_pattern:
+            raise ValueError(f"asset_pattern manquant pour l'installation dans {source}")
+
+        return cls(type=install_type, asset_pattern=asset_pattern)
 
 
 @dataclass(frozen=True)
@@ -57,6 +109,8 @@ class Role:
             ``"systemd"`` (état de l'unité) ou ``"dbus"`` (propriétaire du nom
             de bus).
         app: Répertoire de l'app KDE qui gère le rôle, ex. ``"ad-manager"``.
+        install: Modalités d'installation du service (asset GitHub), ou ``None``
+            si le rôle requiert une installation manuelle.
     """
 
     id: str
@@ -65,9 +119,10 @@ class Role:
     service_name: str
     service_type: str
     app: str
+    install: InstallSpec | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, object], source: Path) -> "Role":
+    def from_dict(cls, data: dict[str, object], source: Path) -> Role:
         """Construit un :class:`Role` depuis un dict JSON.
 
         Args:
@@ -78,8 +133,9 @@ class Role:
             Le rôle correspondant.
 
         Raises:
-            ValueError: si un champ obligatoire est absent ou si
-                ``service_type`` n'est pas une valeur supportée.
+            ValueError: si un champ obligatoire est absent, si ``service_type``
+                n'est pas une valeur supportée, ou si le champ optionnel
+                ``install`` est mal formé.
         """
         missing = [field for field in _REQUIRED_FIELDS if field not in data]
         if missing:
@@ -92,6 +148,11 @@ class Role:
                 f"(attendu: {', '.join(_VALID_SERVICE_TYPES)})"
             )
 
+        install_data = data.get("install")
+        if install_data is not None and not isinstance(install_data, dict):
+            raise ValueError(f"champ 'install' invalide (objet attendu) dans {source}")
+        install = InstallSpec.from_dict(install_data, source) if install_data else None
+
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
@@ -99,6 +160,7 @@ class Role:
             service_name=str(data["service_name"]),
             service_type=service_type,
             app=str(data["app"]),
+            install=install,
         )
 
 

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import sys
 
+from main_window import UpdateManagerWindow
 from PySide6.QtWidgets import QApplication
 
 from core.theme import ThemeManager
-from main_window import UpdateManagerWindow
 
 
 def main() -> int:

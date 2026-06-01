@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QWidget
-
-from core.theme import ThemeManager
 from services.github_service import GitHubReleaseService
 from services.packagekit_service import PackageKitService
 from widgets.services_tab import ServicesUpdateTab
 from widgets.system_tab import SystemUpdateTab
+
+from core.theme import ThemeManager
 
 WINDOW_TITLE = "Fenix Server — Gestionnaire de mises à jour"
 WINDOW_ICON_NAME = "system-software-update"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from models.update_item import ServiceUpdate
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -20,10 +21,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from core.theme import ThemeManager
-from models.update_item import ServiceUpdate
 from services.github_service import GitHubReleaseService
+
+from core.roles import InstallSpec
+from core.theme import ThemeManager
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,43 @@ class _CheckWorker(QThread):
         self.checked.emit(results)
 
 
+class _InstallWorker(QThread):
+    """Thread exécutant ``GitHubReleaseService.install_service`` hors du thread UI.
+
+    Le téléchargement de l'asset et l'appel ``subprocess`` étant bloquants, ils
+    sont déportés ici.
+
+    Signals:
+        installed: Émis (sans argument) lorsque l'installation réussit.
+        failed: Émis avec un message d'erreur en cas d'échec.
+    """
+
+    installed = Signal()
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        service: GitHubReleaseService,
+        repo: str,
+        install: InstallSpec,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._service = service
+        self._repo = repo
+        self._install = install
+
+    def run(self) -> None:
+        """Exécute l'installation et émet le résultat."""
+        try:
+            self._service.install_service(self._repo, self._install)
+        except Exception as exc:  # noqa: BLE001 - remonté à l'UI après log
+            logger.exception("Installation du service échouée")
+            self.failed.emit(str(exc))
+            return
+        self.installed.emit()
+
+
 class ServicesUpdateTab(QWidget):
     """Onglet listant les mises à jour des services Fenix (releases GitHub)."""
 
@@ -82,8 +120,10 @@ class ServicesUpdateTab(QWidget):
         self._service = service
         self._theme = theme
         self._services: dict[str, tuple[str, str]] = {}
+        self._install_specs: dict[str, InstallSpec | None] = {}
         self._updates: list[ServiceUpdate] = []
         self._worker: _CheckWorker | None = None
+        self._install_worker: _InstallWorker | None = None
         self._build_ui()
 
     def set_services(self, services: dict[str, tuple[str, str]]) -> None:
@@ -93,6 +133,15 @@ class ServicesUpdateTab(QWidget):
             services: Mapping ``service_id -> (repo GitHub, version installée)``.
         """
         self._services = dict(services)
+
+    def set_install_specs(self, specs: dict[str, InstallSpec | None]) -> None:
+        """Définit les modalités d'installation par service.
+
+        Args:
+            specs: Mapping ``service_id -> InstallSpec | None``. Un service
+                absent ou associé à ``None`` requiert une installation manuelle.
+        """
+        self._install_specs = dict(specs)
 
     def _build_ui(self) -> None:
         """Construit l'interface (liste des services, versions, boutons)."""
@@ -143,22 +192,57 @@ class ServicesUpdateTab(QWidget):
         self._worker = None
 
     def _on_update_clicked(self) -> None:
-        """Slot : déclenche la mise à jour du service sélectionné."""
+        """Slot : déclenche l'installation de la mise à jour sélectionnée.
+
+        Si le service n'a pas de modalités d'installation (``InstallSpec`` à
+        ``None``), affiche « Installation manuelle requise ». Sinon, télécharge
+        et installe l'asset dans un thread dédié (flux protégé par Polkit
+        ``org.fenixserver.update.install-service``).
+        """
+        if self._install_worker is not None and self._install_worker.isRunning():
+            return
         row = self._table.currentRow()
         if row < 0 or row >= len(self._updates):
-            QMessageBox.warning(self, "Aucune sélection", "Sélectionnez un service à mettre à jour.")
+            QMessageBox.warning(
+                self, "Aucune sélection", "Sélectionnez un service à mettre à jour."
+            )
             return
         update = self._updates[row]
         if not update.update_available:
             QMessageBox.information(self, "À jour", f"{update.name} est déjà à jour.")
             return
-        # Le déploiement effectif (download + redémarrage via systemd) relève du
-        # flux protégé par Polkit org.fenixserver.update.install-service.
+
+        install = self._install_specs.get(update.service_id)
+        if install is None:
+            QMessageBox.information(
+                self,
+                "Installation manuelle requise",
+                f"{update.name} ne définit pas de méthode d'installation automatique. "
+                f"Installez la version {update.latest_version} manuellement.",
+            )
+            return
+
+        repo = self._services.get(update.service_id, ("", ""))[0]
+        self._btn_update.setEnabled(False)
+        worker = _InstallWorker(self._service, repo, install, self)
+        worker.installed.connect(lambda: self._on_installed(update))
+        worker.failed.connect(self._on_error)
+        worker.finished.connect(self._on_install_worker_finished)
+        self._install_worker = worker
+        worker.start()
+
+    def _on_installed(self, update: ServiceUpdate) -> None:
+        """Slot : confirme la fin de l'installation d'un service."""
         QMessageBox.information(
             self,
-            "Mise à jour du service",
-            f"Mise à jour de {update.name} vers {update.latest_version}.",
+            "Mise à jour terminée",
+            f"{update.name} a été mis à jour vers {update.latest_version}.",
         )
+
+    def _on_install_worker_finished(self) -> None:
+        """Slot : nettoyage à la fin du thread d'installation."""
+        self._btn_update.setEnabled(True)
+        self._install_worker = None
 
     def _on_services_checked(self, updates: list) -> None:
         """Slot : peuple la liste avec l'état de mise à jour des services.

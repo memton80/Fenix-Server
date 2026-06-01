@@ -14,13 +14,13 @@ from dasbus.connection import SessionMessageBus, SystemMessageBus
 from dasbus.error import DBusError
 
 if TYPE_CHECKING:
-    from dasbus.connection import MessageBus
     from dasbus.client.proxy import InterfaceProxy
+    from dasbus.connection import MessageBus
 
 logger = logging.getLogger(__name__)
 
 
-def get_system_bus() -> "MessageBus":
+def get_system_bus() -> MessageBus:
     """Retourne la connexion au bus système D-Bus (dasbus ``SystemMessageBus``).
 
     La connexion doit être réutilisée par l'appelant plutôt que recréée à
@@ -43,7 +43,7 @@ def get_system_bus() -> "MessageBus":
         raise RuntimeError("Bus système D-Bus indisponible") from exc
 
 
-def get_session_bus() -> "MessageBus":
+def get_session_bus() -> MessageBus:
     """Retourne la connexion au bus de session D-Bus (dasbus ``SessionMessageBus``).
 
     Réservé aux services **de session** (préférences utilisateur, portails XDG,
@@ -92,7 +92,7 @@ def service_available(service_name: str) -> bool:
         return False
 
 
-def get_service_proxy(service_name: str, object_path: str) -> "InterfaceProxy":
+def get_service_proxy(service_name: str, object_path: str) -> InterfaceProxy:
     """Retourne un proxy D-Bus vers un objet d'un service système.
 
     Vérifie au préalable la disponibilité du service via :func:`service_available`.

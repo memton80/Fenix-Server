@@ -137,7 +137,7 @@ class ThemeManager:
         return None
 
     @classmethod
-    def from_system(cls, fallback: ThemeMode = ThemeMode.DARK) -> "ThemeManager":
+    def from_system(cls, fallback: ThemeMode = ThemeMode.DARK) -> ThemeManager:
         """Crée un gestionnaire initialisé sur la préférence système.
 
         Args:
@@ -220,7 +220,7 @@ class ThemeManager:
             f" QPushButton:disabled {{ background-color: {self.color('border')}; }}"
         )
 
-    def icon(self, name: str) -> "QIcon":
+    def icon(self, name: str) -> QIcon:
         """Retourne une icône du thème par son nom logique.
 
         Utilise le thème d'icônes courant (KDE/freedesktop) via

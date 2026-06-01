@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
+from dataclasses import FrozenInstanceError
 
+import pytest
 from models.update_item import ServiceUpdate, SystemPackageUpdate
 
 
@@ -29,7 +30,7 @@ def test_system_package_update_champs():
 
 def test_system_package_update_est_frozen():
     pkg = SystemPackageUpdate("bash;5.2-1;amd64;debian", "bash", "5.2-1", "GNU Bash")
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         pkg.name = "zsh"  # type: ignore[misc]
 
 

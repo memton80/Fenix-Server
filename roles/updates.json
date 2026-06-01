@@ -4,5 +4,9 @@
     "description": "MAJ système (PackageKit) et MAJ des services Fenix",
     "service_name": "org.freedesktop.PackageKit",
     "service_type": "dbus",
-    "app": "update-manager"
+    "app": "update-manager",
+    "install": {
+        "type": "script",
+        "asset_pattern": "install.sh"
+    }
 }

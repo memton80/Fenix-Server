@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from models.update_item import SystemPackageUpdate
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -14,10 +15,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from services.packagekit_service import PackageKitService
 
 from core.theme import ThemeManager
-from models.update_item import SystemPackageUpdate
-from services.packagekit_service import PackageKitService
 
 _COLUMNS = ("Paquet", "Version", "Résumé")
 
