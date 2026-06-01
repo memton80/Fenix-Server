@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -25,8 +26,13 @@ def _ok(arguments: dict) -> list:
     return [{"result": 0, "arguments": arguments}]
 
 
+def _service(password: str = "") -> KeaService:
+    """Service Kea déterministe : mot de passe explicite, sans accès fichier."""
+    return KeaService(password=password)
+
+
 def test_list_leases_mappe_la_reponse():
-    service = KeaService()
+    service = _service()
     body = _ok(
         {
             "leases": [
@@ -47,7 +53,7 @@ def test_list_leases_mappe_la_reponse():
 
 
 def test_list_subnets_lit_la_config():
-    service = KeaService()
+    service = _service()
     body = _ok(
         {
             "Dhcp4": {
@@ -68,7 +74,7 @@ def test_list_subnets_lit_la_config():
 
 
 def test_add_reservation_envoie_la_commande():
-    service = KeaService()
+    service = _service()
     reservation = DhcpReservation("aa:bb:cc:dd:ee:ff", "192.168.1.50", "pc2", subnet_id=1)
     captured: dict = {}
 
@@ -85,7 +91,7 @@ def test_add_reservation_envoie_la_commande():
 
 
 def test_command_erreur_kea_leve_runtimeerror():
-    service = KeaService()
+    service = _service()
     body = [{"result": 1, "text": "boom"}]
     with (
         patch("urllib.request.urlopen", return_value=_http_response(body)),
@@ -94,8 +100,61 @@ def test_command_erreur_kea_leve_runtimeerror():
         service.list_leases()
 
 
+# --- authentification HTTP basic -------------------------------------------
+
+
+def test_command_envoie_l_entete_authorization():
+    service = KeaService(username="fenix", password="s3cret")
+    captured: dict = {}
+
+    def _capture(request, timeout):
+        captured["auth"] = request.get_header("Authorization")
+        return _http_response(_ok({}))
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
+        service.list_leases()
+
+    expected = "Basic " + base64.b64encode(b"fenix:s3cret").decode("ascii")
+    assert captured["auth"] == expected
+
+
+def test_mot_de_passe_lu_depuis_le_fichier(tmp_path):
+    pw_file = tmp_path / "kea-api-password"
+    pw_file.write_text("fromfile\n", encoding="utf-8")
+    service = KeaService(password_file=str(pw_file))
+    captured: dict = {}
+
+    def _capture(request, timeout):
+        captured["auth"] = request.get_header("Authorization")
+        return _http_response(_ok({}))
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
+        service.list_leases()
+
+    # Le fichier est lu et débarrassé du saut de ligne final.
+    expected = "Basic " + base64.b64encode(b"fenix:fromfile").decode("ascii")
+    assert captured["auth"] == expected
+
+
+def test_fichier_absent_aucune_authentification(tmp_path):
+    service = KeaService(password_file=str(tmp_path / "absent"))
+    captured: dict = {}
+
+    def _capture(request, timeout):
+        captured["auth"] = request.get_header("Authorization")
+        return _http_response(_ok({}))
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
+        service.list_leases()
+
+    assert captured["auth"] is None
+
+
+# --- contrôle du service ----------------------------------------------------
+
+
 def test_control_service_via_pkexec_systemctl():
-    service = KeaService()
+    service = _service()
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     with patch("subprocess.run", return_value=completed) as run:
         service.control_service("restart")
@@ -108,6 +167,6 @@ def test_control_service_via_pkexec_systemctl():
 
 
 def test_control_service_action_invalide_leve_valueerror():
-    service = KeaService()
+    service = _service()
     with pytest.raises(ValueError):
         service.control_service("frobnicate")

@@ -6,6 +6,11 @@ du Kea Control Agent, écoutant en local sur le port 8000 (accès via la stdlib
 commande JSON ``{"command": ..., "service": ["dhcp4"], "arguments": {...}}`` et
 lit la réponse JSON.
 
+L'API REST est protégée par authentification HTTP basic : le Control Agent et
+le DHCP Manager partagent un mot de passe généré à l'installation et stocké dans
+``/etc/kea/kea-api-password`` (cf. ``bootstrap/install.sh``). Le mot de passe est
+lu au démarrage et envoyé dans l'en-tête ``Authorization`` de chaque requête.
+
 Le contrôle du service système (démarrer / arrêter / redémarrer ``kea-dhcp4``)
 est délégué à ``systemctl`` exécuté via ``pkexec`` (même approche que
 ``role_service``) : l'élévation et l'autorisation sont gérées par pkexec/Polkit.
@@ -13,6 +18,7 @@ est délégué à ``systemctl`` exécuté via ``pkexec`` (même approche que
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import subprocess
@@ -31,6 +37,10 @@ KEA_API_URL = "http://127.0.0.1:8000/"
 KEA_SERVICE = "dhcp4"
 # Unité systemd du serveur DHCPv4.
 KEA_UNIT = "kea-dhcp4-server"
+# Identité utilisée pour l'authentification HTTP basic de l'API REST.
+KEA_API_USER = "fenix"
+# Fichier contenant le mot de passe de l'API (partagé avec le Control Agent).
+KEA_API_PASSWORD_FILE = "/etc/kea/kea-api-password"
 
 _REQUEST_TIMEOUT = 10  # secondes
 _CONTENT_TYPE = "application/json"
@@ -44,13 +54,58 @@ _SERVICE_ACTIONS = ("start", "stop", "restart")
 class KeaService:
     """Expose les opérations DHCP (baux, plages, réservations, contrôle service)."""
 
-    def __init__(self, api_url: str = KEA_API_URL) -> None:
+    def __init__(
+        self,
+        api_url: str = KEA_API_URL,
+        *,
+        username: str = KEA_API_USER,
+        password: str | None = None,
+        password_file: str = KEA_API_PASSWORD_FILE,
+    ) -> None:
         """Initialise le service Kea.
 
         Args:
             api_url: URL du Kea Control Agent (port 8000 local par défaut).
+            username: Utilisateur de l'authentification HTTP basic.
+            password: Mot de passe de l'API. Si ``None``, il est lu depuis
+                ``password_file``.
+            password_file: Fichier contenant le mot de passe partagé avec le
+                Control Agent (utilisé seulement si ``password`` est ``None``).
         """
         self._api_url = api_url
+        self._username = username
+        self._password = password if password is not None else self._read_password(password_file)
+
+    @staticmethod
+    def _read_password(path: str) -> str:
+        """Lit le mot de passe de l'API depuis un fichier (best-effort).
+
+        Args:
+            path: Chemin du fichier de mot de passe.
+
+        Returns:
+            Le mot de passe (espaces/sauts de ligne retirés), ou une chaîne vide
+            si le fichier est absent ou illisible (l'API sera alors appelée sans
+            authentification).
+        """
+        try:
+            with open(path, encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError as exc:
+            logger.warning("Mot de passe API Kea illisible (%s): %s", path, exc)
+            return ""
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Construit l'en-tête ``Authorization`` (HTTP basic) si possible.
+
+        Returns:
+            Un mapping contenant ``Authorization`` si un mot de passe est
+            disponible, sinon un mapping vide.
+        """
+        if not self._password:
+            return {}
+        token = base64.b64encode(f"{self._username}:{self._password}".encode()).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
 
     def _command(self, command: str, arguments: dict[str, object] | None = None) -> dict:
         """Envoie une commande à l'API Kea et retourne ses ``arguments``.
@@ -69,9 +124,8 @@ class KeaService:
         if arguments is not None:
             payload["arguments"] = arguments
         data = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            self._api_url, data=data, headers={"Content-Type": _CONTENT_TYPE}
-        )
+        headers = {"Content-Type": _CONTENT_TYPE, **self._auth_headers()}
+        request = urllib.request.Request(self._api_url, data=data, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:
                 body = json.loads(response.read().decode("utf-8"))
