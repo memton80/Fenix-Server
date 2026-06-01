@@ -290,3 +290,40 @@ def test_control_service_action_invalide_leve_valueerror():
     service = _service()
     with pytest.raises(ValueError):
         service.control_service("frobnicate")
+
+
+def test_restart_service_redemarre_les_deux_dans_lordre():
+    service = _service()
+    events: list = []
+
+    def _run(cmd, *args, **kwargs):
+        events.append(("run", cmd))
+        return _completed()
+
+    with (
+        patch("subprocess.run", side_effect=_run),
+        patch("time.sleep", side_effect=lambda s: events.append(("sleep", s))),
+    ):
+        service.restart_service()
+
+    # DHCPv4 d'abord, attente de 2 s, puis le Control Agent.
+    assert events == [
+        ("run", ["pkexec", "systemctl", "restart", "kea-dhcp4-server"]),
+        ("sleep", 2),
+        ("run", ["pkexec", "systemctl", "restart", "kea-ctrl-agent"]),
+    ]
+
+
+def test_restart_service_echec_du_premier_n_atteint_pas_le_second():
+    service = _service()
+    error = subprocess.CalledProcessError(1, ["pkexec"], stderr="boom")
+    with (
+        patch("subprocess.run", side_effect=error) as run,
+        patch("time.sleep") as sleep,
+        pytest.raises(RuntimeError),
+    ):
+        service.restart_service()
+
+    # Le serveur DHCPv4 échoue : pas d'attente, pas de redémarrage du Control Agent.
+    run.assert_called_once()
+    sleep.assert_not_called()

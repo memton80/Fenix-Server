@@ -28,6 +28,7 @@ import base64
 import json
 import logging
 import subprocess
+import time
 import urllib.error
 import urllib.request
 
@@ -43,6 +44,8 @@ KEA_API_URL = "http://127.0.0.1:8000/"
 KEA_SERVICE = "dhcp4"
 # Unité systemd du serveur DHCPv4.
 KEA_UNIT = "kea-dhcp4-server"
+# Unité systemd du Control Agent (API REST).
+KEA_CTRL_AGENT_UNIT = "kea-ctrl-agent"
 # Fichier de configuration du serveur DHCPv4 (les plages y sont gérées en direct).
 KEA_DHCP4_CONFIG = "/etc/kea/kea-dhcp4.conf"
 # Identité utilisée pour l'authentification HTTP basic de l'API REST.
@@ -57,6 +60,8 @@ _CONTENT_TYPE = "application/json"
 _KEA_SUCCESS = 0
 # Résultat « vide » de Kea (aucun objet correspondant) : pas une erreur.
 _KEA_EMPTY = 3
+# Délai entre le redémarrage du serveur DHCPv4 et celui du Control Agent (s).
+_RESTART_DELAY_SECONDS = 2
 # Texte renvoyé par lease4-get-all lorsqu'aucun bail n'existe.
 _EMPTY_LEASES_TEXT = "0 IPv4 lease(s) found"
 # Actions systemctl autorisées pour le service Kea.
@@ -346,11 +351,34 @@ class KeaService:
 
     # --- contrôle du service ---------------------------------------------
 
-    def control_service(self, action: str) -> None:
-        """Contrôle l'unité systemd Kea via ``pkexec systemctl`` (privilégié).
+    def _run_systemctl(self, action: str, unit: str) -> None:
+        """Exécute ``pkexec systemctl <action> <unit>`` (action privilégiée).
 
         L'élévation et l'autorisation sont assurées par ``pkexec`` (Polkit) ;
         aucune vérification Polkit explicite n'est faite ici.
+
+        Args:
+            action: Action systemctl (``start``, ``stop`` ou ``restart``).
+            unit: Unité systemd ciblée.
+
+        Raises:
+            RuntimeError: si la commande ``systemctl`` échoue.
+        """
+        command = ["pkexec", "systemctl", action, unit]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            logger.error(
+                "systemctl %s %s a échoué: code=%s stderr=%s",
+                action,
+                unit,
+                exc.returncode,
+                exc.stderr,
+            )
+            raise RuntimeError(f"Commande systemctl échouée (code {exc.returncode})") from exc
+
+    def control_service(self, action: str) -> None:
+        """Contrôle l'unité du serveur DHCPv4 via ``pkexec systemctl``.
 
         Args:
             action: Action systemctl (``start``, ``stop`` ou ``restart``).
@@ -361,15 +389,19 @@ class KeaService:
         """
         if action not in _SERVICE_ACTIONS:
             raise ValueError(f"Action de service non supportée: {action}")
-        command = ["pkexec", "systemctl", action, KEA_UNIT]
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            logger.error(
-                "systemctl %s %s a échoué: code=%s stderr=%s",
-                action,
-                KEA_UNIT,
-                exc.returncode,
-                exc.stderr,
-            )
-            raise RuntimeError(f"Commande systemctl échouée (code {exc.returncode})") from exc
+        self._run_systemctl(action, KEA_UNIT)
+
+    def restart_service(self) -> None:
+        """Redémarre la pile DHCP dans l'ordre : serveur DHCPv4 puis Control Agent.
+
+        Le serveur DHCPv4 (qui crée le socket de contrôle) est redémarré en
+        premier ; après une courte attente (le temps que le socket soit recréé),
+        le Control Agent — qui s'y connecte — est redémarré à son tour.
+
+        Raises:
+            RuntimeError: si l'un des redémarrages ``systemctl`` échoue (le
+                Control Agent n'est pas redémarré si le serveur DHCPv4 échoue).
+        """
+        self._run_systemctl("restart", KEA_UNIT)
+        time.sleep(_RESTART_DELAY_SECONDS)
+        self._run_systemctl("restart", KEA_CTRL_AGENT_UNIT)
