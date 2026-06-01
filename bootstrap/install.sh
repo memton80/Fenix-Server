@@ -195,6 +195,7 @@ EOF
 install_desktop_entries() {
     install_one_desktop_entry "update-manager" "fenix-update-manager.desktop" "fenix-update-manager"
     install_one_desktop_entry "server-manager" "fenix-server-manager.desktop" "fenix-server-manager"
+    install_one_desktop_entry "ad-manager" "fenix-ad-manager.desktop" "fenix-ad-manager"
 }
 
 # --- résumé ----------------------------------------------------------------
