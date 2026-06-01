@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Fenix Server</vendor>
+
+  <action id="org.fenixserver.dns.list-zones">
+    <description>Lister les zones DNS du domaine</description>
+    <description xml:lang="en">List domain DNS zones</description>
+    <message>L'authentification est requise pour lister les zones DNS.</message>
+    <message xml:lang="en">Authentication is required to list DNS zones.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.dns.add-record">
+    <description>Ajouter un enregistrement DNS</description>
+    <description xml:lang="en">Add a DNS record</description>
+    <message>L'authentification est requise pour ajouter un enregistrement DNS.</message>
+    <message xml:lang="en">Authentication is required to add a DNS record.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.dns.delete-record">
+    <description>Supprimer un enregistrement DNS</description>
+    <description xml:lang="en">Delete a DNS record</description>
+    <message>L'authentification est requise pour supprimer un enregistrement DNS.</message>
+    <message xml:lang="en">Authentication is required to delete a DNS record.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>

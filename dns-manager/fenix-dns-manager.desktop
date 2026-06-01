@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Fenix — Gestionnaire DNS
+Comment=Gestion des zones et enregistrements DNS du domaine
+Comment[en]=DNS zones and records management
+Exec=fenix-dns-manager
+Icon=network-server
+Terminal=false
+Categories=System;

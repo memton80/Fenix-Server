@@ -1,0 +1,12 @@
+{
+    "id": "dns",
+    "name": "DNS",
+    "description": "Zones et enregistrements DNS du domaine via Samba AD",
+    "service_name": "samba-ad-dc",
+    "service_type": "systemd",
+    "app": "dns-manager",
+    "install": {
+        "type": "deb",
+        "asset_pattern": "*.deb"
+    }
+}
