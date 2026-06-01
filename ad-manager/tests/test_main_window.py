@@ -1,7 +1,7 @@
 """Tests pour main_window — assemblage des trois onglets (Qt offscreen).
 
-LDAPService/ADService sont patchés pour éviter toute connexion réelle lors du
-rafraîchissement automatique des onglets à la construction.
+LDAPService/ADService/LoginDialog sont patchés pour éviter toute connexion
+réelle et tout dialogue bloquant lors de la construction de la fenêtre.
 """
 
 from __future__ import annotations
@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import main_window as mw
 import pytest
-from main_window import WINDOW_TITLE, ADManagerWindow
+from main_window import WINDOW_TITLE, ADManagerWindow, LoginDialog
+from PySide6.QtWidgets import QDialog
 from widgets.domain_tab import DomainTab
 from widgets.groups_tab import GroupsTab
 from widgets.users_tab import UsersTab
@@ -31,8 +32,11 @@ def ad_service() -> MagicMock:
 def window(ad_service: MagicMock) -> ADManagerWindow:
     with patch.object(mw, "LDAPService") as ldap_cls, patch.object(
         mw, "ADService", return_value=ad_service
-    ):
+    ), patch.object(mw, "LoginDialog") as login_cls:
         ldap_cls.from_smb_conf.return_value = MagicMock()
+        login = login_cls.return_value
+        login.exec.return_value = QDialog.DialogCode.Accepted
+        login.credentials.return_value = ("Administrator", "pw")
         yield ADManagerWindow(ThemeManager())
 
 
@@ -61,23 +65,51 @@ def test_les_onglets_partagent_le_service(window: ADManagerWindow, ad_service: M
     assert window.domain_tab._service is ad_service
 
 
-def test_construit_le_service_depuis_smb_conf(ad_service: MagicMock):
+def test_connexion_passe_les_credentials_du_dialogue(ad_service: MagicMock):
     with patch.object(mw, "LDAPService") as ldap_cls, patch.object(
         mw, "ADService", return_value=ad_service
-    ):
+    ), patch.object(mw, "LoginDialog") as login_cls:
         ldap = ldap_cls.from_smb_conf.return_value
+        login = login_cls.return_value
+        login.exec.return_value = QDialog.DialogCode.Accepted
+        login.credentials.return_value = ("admin", "s3cret")
         ADManagerWindow(ThemeManager())
+
     ldap_cls.from_smb_conf.assert_called_once_with()
+    ldap.set_credentials.assert_called_once_with(bind_dn="admin", password="s3cret")
     ldap.connect.assert_called_once_with()
 
 
-def test_connexion_initiale_en_echec_non_fatale(ad_service: MagicMock):
-    # Une RuntimeError au connect ne doit pas empêcher l'ouverture de la fenêtre.
+def test_reprompt_si_la_connexion_echoue(ad_service: MagicMock):
+    # Premier bind en échec : les identifiants sont redemandés, puis ça réussit.
     with patch.object(mw, "LDAPService") as ldap_cls, patch.object(
         mw, "ADService", return_value=ad_service
-    ):
-        ldap_cls.from_smb_conf.return_value.connect.side_effect = RuntimeError("pas de DC")
+    ), patch.object(mw, "LoginDialog") as login_cls, patch(
+        "main_window.QMessageBox.warning"
+    ) as warning:
+        ldap = ldap_cls.from_smb_conf.return_value
+        ldap.connect.side_effect = [RuntimeError("identifiants invalides"), None]
+        login = login_cls.return_value
+        login.exec.return_value = QDialog.DialogCode.Accepted
+        login.credentials.side_effect = [("admin", "faux"), ("admin", "bon")]
         window = ADManagerWindow(ThemeManager())
+
+    assert ldap.connect.call_count == 2
+    assert ldap.set_credentials.call_count == 2
+    warning.assert_called_once()
+    assert window._tabs.count() == 3
+
+
+def test_login_annule_ouvre_sans_connexion(ad_service: MagicMock):
+    with patch.object(mw, "LDAPService") as ldap_cls, patch.object(
+        mw, "ADService", return_value=ad_service
+    ), patch.object(mw, "LoginDialog") as login_cls:
+        ldap = ldap_cls.from_smb_conf.return_value
+        login_cls.return_value.exec.return_value = QDialog.DialogCode.Rejected
+        window = ADManagerWindow(ThemeManager())
+
+    ldap.connect.assert_not_called()
+    ldap.set_credentials.assert_not_called()
     assert window._tabs.count() == 3
 
 
@@ -114,3 +146,18 @@ def test_samba_non_configure_domaine_affiche_non_configure():
         window = ADManagerWindow(ThemeManager())
     # L'onglet Domaine s'ouvre sans erreur via le service de repli.
     assert window.domain_tab._value_samba.text() == "non configuré"
+
+
+# --- LoginDialog -----------------------------------------------------------
+
+
+def test_login_dialog_utilisateur_par_defaut():
+    dialog = LoginDialog(ThemeManager())
+    assert dialog._edit_user.text() == "Administrator"
+
+
+def test_login_dialog_credentials():
+    dialog = LoginDialog(ThemeManager())
+    dialog._edit_user.setText("admin")
+    dialog._edit_password.setText("secret")
+    assert dialog.credentials() == ("admin", "secret")

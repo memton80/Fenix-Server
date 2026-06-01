@@ -58,6 +58,16 @@ class LDAPService:
         """Base DN de recherche du domaine."""
         return self._base_dn
 
+    def set_credentials(self, bind_dn: str, password: str) -> None:
+        """Définit les identifiants de liaison (bind) utilisés par :meth:`connect`.
+
+        Args:
+            bind_dn: Identité de connexion (DN, UPN ``user@realm`` ou nom).
+            password: Mot de passe associé.
+        """
+        self._bind_dn = bind_dn
+        self._password = password
+
     @classmethod
     def from_smb_conf(cls, path: str = SMB_CONF_PATH) -> LDAPService:
         """Construit un :class:`LDAPService` depuis la configuration Samba.
