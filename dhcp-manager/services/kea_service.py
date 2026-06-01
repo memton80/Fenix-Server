@@ -1,10 +1,14 @@
 """Opérations DHCP du DHCP Manager via l'API REST du Kea Control Agent.
 
-Les lectures et écritures (baux, plages, réservations) passent par l'API REST
-du Kea Control Agent, écoutant en local sur le port 8000 (accès via la stdlib
-``urllib``, même approche que ``github_service``). Chaque appel envoie une
-commande JSON ``{"command": ..., "service": ["dhcp4"], "arguments": {...}}`` et
-lit la réponse JSON.
+Les baux et les réservations passent par l'API REST du Kea Control Agent,
+écoutant en local sur le port 8000 (accès via la stdlib ``urllib``, même approche
+que ``github_service``). Chaque appel envoie une commande JSON
+``{"command": ..., "service": ["dhcp4"], "arguments": {...}}`` et lit la réponse.
+
+Les plages (subnets) sont en revanche lues et écrites directement dans
+``/etc/kea/kea-dhcp4.conf`` via ``pkexec`` (``cat`` puis ``tee``), suivi d'un
+redémarrage de ``kea-dhcp4-server`` : seul le hook ``lease_cmds`` est chargé,
+``subnet_cmds`` ne l'est pas.
 
 L'API REST est protégée par authentification HTTP basic : le mot de passe est
 généré à l'installation et stocké dans ``/etc/kea/kea-api-password`` en
@@ -39,6 +43,8 @@ KEA_API_URL = "http://127.0.0.1:8000/"
 KEA_SERVICE = "dhcp4"
 # Unité systemd du serveur DHCPv4.
 KEA_UNIT = "kea-dhcp4-server"
+# Fichier de configuration du serveur DHCPv4 (les plages y sont gérées en direct).
+KEA_DHCP4_CONFIG = "/etc/kea/kea-dhcp4.conf"
 # Identité utilisée pour l'authentification HTTP basic de l'API REST.
 KEA_API_USER = "fenix"
 # Fichier contenant le mot de passe de l'API (partagé avec le Control Agent).
@@ -166,24 +172,80 @@ class KeaService:
         leases = arguments.get("leases", [])
         return [DhcpLease.from_kea(lease) for lease in leases]
 
-    # --- plages -----------------------------------------------------------
+    # --- plages (gérées dans /etc/kea/kea-dhcp4.conf) ---------------------
 
-    def list_subnets(self) -> list[DhcpSubnet]:
-        """Retourne les plages (subnets) DHCP configurées (``config-get``).
+    def _read_config(self) -> dict:
+        """Lit et parse ``kea-dhcp4.conf`` via ``pkexec cat`` (privilégié).
 
         Returns:
-            Les :class:`DhcpSubnet` déclarées dans la configuration Kea.
+            La configuration Kea désérialisée (dictionnaire racine).
 
         Raises:
-            RuntimeError: en cas d'erreur d'API.
+            RuntimeError: si la lecture ou le parsing JSON échoue.
         """
-        arguments = self._command("config-get")
-        config = arguments.get("Dhcp4", {})
-        subnets = config.get("subnet4", []) if isinstance(config, dict) else []
+        try:
+            result = subprocess.run(
+                ["pkexec", "cat", KEA_DHCP4_CONFIG],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            logger.error("Lecture de %s échouée: %s", KEA_DHCP4_CONFIG, exc)
+            raise RuntimeError(f"Lecture de {KEA_DHCP4_CONFIG} échouée") from exc
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            logger.error("JSON invalide dans %s: %s", KEA_DHCP4_CONFIG, exc)
+            raise RuntimeError(f"Configuration Kea illisible: {KEA_DHCP4_CONFIG}") from exc
+
+    def _write_config(self, config: dict) -> None:
+        """Écrit ``config`` dans ``kea-dhcp4.conf`` puis redémarre le serveur.
+
+        L'écriture passe par ``pkexec tee`` (le contenu est fourni sur l'entrée
+        standard), suivie d'un ``pkexec systemctl restart kea-dhcp4-server`` pour
+        recharger la configuration.
+
+        Args:
+            config: Configuration Kea complète à sérialiser.
+
+        Raises:
+            RuntimeError: si l'écriture ou le redémarrage échoue.
+        """
+        payload = json.dumps(config, indent=2)
+        try:
+            subprocess.run(
+                ["pkexec", "tee", KEA_DHCP4_CONFIG],
+                input=payload,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            logger.error("Écriture de %s échouée: %s", KEA_DHCP4_CONFIG, exc)
+            raise RuntimeError(f"Écriture de {KEA_DHCP4_CONFIG} échouée") from exc
+        self.control_service("restart")
+
+    def list_subnets(self) -> list[DhcpSubnet]:
+        """Retourne les plages (subnets) lues dans ``kea-dhcp4.conf``.
+
+        Returns:
+            Les :class:`DhcpSubnet` déclarées dans la configuration du serveur.
+
+        Raises:
+            RuntimeError: si la lecture du fichier échoue.
+        """
+        dhcp4 = self._read_config().get("Dhcp4", {})
+        subnets = dhcp4.get("subnet4", []) if isinstance(dhcp4, dict) else []
         return [DhcpSubnet.from_kea(subnet) for subnet in subnets]
 
     def set_subnet(self, subnet: str, pool: str, *, subnet_id: int) -> DhcpSubnet:
-        """Crée ou modifie une plage DHCP (``subnet4-set``).
+        """Crée ou modifie une plage DHCP dans ``kea-dhcp4.conf``.
+
+        La plage existante de même ``subnet_id`` est mise à jour sur place (ses
+        autres clés, dont d'éventuelles ``reservations``, sont conservées) ;
+        sinon une nouvelle entrée est ajoutée. Le fichier est ensuite réécrit et
+        ``kea-dhcp4-server`` redémarré.
 
         Args:
             subnet: Réseau au format CIDR (ex. ``192.168.1.0/24``).
@@ -194,15 +256,23 @@ class KeaService:
             La plage telle qu'enregistrée.
 
         Raises:
-            RuntimeError: en cas d'erreur d'API.
+            RuntimeError: si la lecture, l'écriture ou le redémarrage échoue.
         """
-        definition: dict[str, object] = {
-            "id": subnet_id,
-            "subnet": subnet,
-            "pools": [{"pool": pool}] if pool else [],
-        }
-        self._command("subnet4-set", {"subnet4": [definition]})
-        return DhcpSubnet.from_kea(definition)
+        config = self._read_config()
+        dhcp4 = config.setdefault("Dhcp4", {})
+        subnets: list[dict] = dhcp4.setdefault("subnet4", [])
+        pools = [{"pool": pool}] if pool else []
+
+        for entry in subnets:
+            if int(entry.get("id", 0)) == subnet_id:
+                entry["subnet"] = subnet
+                entry["pools"] = pools
+                break
+        else:
+            subnets.append({"id": subnet_id, "subnet": subnet, "pools": pools})
+
+        self._write_config(config)
+        return DhcpSubnet.from_kea({"id": subnet_id, "subnet": subnet, "pools": pools})
 
     # --- réservations -----------------------------------------------------
 

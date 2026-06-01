@@ -52,25 +52,98 @@ def test_list_leases_mappe_la_reponse():
     assert leases[0].state == "active"
 
 
-def test_list_subnets_lit_la_config():
+# --- plages : lecture/écriture directe de /etc/kea/kea-dhcp4.conf ----------
+
+_DHCP4_CONFIG = "/etc/kea/kea-dhcp4.conf"
+
+
+def _completed(stdout: str = "") -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+
+def test_list_subnets_lit_le_fichier_via_pkexec_cat():
     service = _service()
-    body = _ok(
-        {
-            "Dhcp4": {
-                "subnet4": [
-                    {
-                        "id": 1,
-                        "subnet": "192.168.1.0/24",
-                        "pools": [{"pool": "192.168.1.100-192.168.1.200"}],
-                    }
-                ]
-            }
+    config = {
+        "Dhcp4": {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "192.168.1.0/24",
+                    "pools": [{"pool": "192.168.1.100-192.168.1.200"}],
+                }
+            ]
         }
-    )
-    with patch("urllib.request.urlopen", return_value=_http_response(body)):
+    }
+    with patch("subprocess.run", return_value=_completed(json.dumps(config))) as run:
         subnets = service.list_subnets()
+    assert run.call_args.args[0] == ["pkexec", "cat", _DHCP4_CONFIG]
     assert subnets[0].subnet_id == 1
     assert subnets[0].pool == "192.168.1.100-192.168.1.200"
+
+
+def test_list_subnets_lecture_echoue_leve_runtimeerror():
+    service = _service()
+    error = subprocess.CalledProcessError(1, ["pkexec"], stderr="denied")
+    with patch("subprocess.run", side_effect=error), pytest.raises(RuntimeError):
+        service.list_subnets()
+
+
+def _run_with_config(config: dict, captured: dict):
+    """side_effect : `pkexec cat` renvoie config, `tee` capture le JSON écrit."""
+
+    def _run(cmd, *args, **kwargs):
+        if cmd[:2] == ["pkexec", "cat"]:
+            return _completed(json.dumps(config))
+        if cmd[:2] == ["pkexec", "tee"]:
+            captured["written"] = kwargs.get("input")
+        captured.setdefault("commands", []).append(cmd)
+        return _completed()
+
+    return _run
+
+
+def test_set_subnet_met_a_jour_le_fichier_et_redemarre():
+    service = _service()
+    config = {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "192.168.1.0/24", "pools": []}]}}
+    captured: dict = {}
+    with patch("subprocess.run", side_effect=_run_with_config(config, captured)):
+        result = service.set_subnet("192.168.1.0/24", "192.168.1.50-192.168.1.99", subnet_id=1)
+
+    written = json.loads(captured["written"])
+    assert written["Dhcp4"]["subnet4"][0]["pools"] == [{"pool": "192.168.1.50-192.168.1.99"}]
+    # tee puis redémarrage de kea-dhcp4-server.
+    assert ["pkexec", "tee", _DHCP4_CONFIG] in captured["commands"]
+    assert ["pkexec", "systemctl", "restart", "kea-dhcp4-server"] in captured["commands"]
+    assert result.pool == "192.168.1.50-192.168.1.99"
+
+
+def test_set_subnet_ajoute_une_plage_absente():
+    service = _service()
+    config: dict = {"Dhcp4": {"subnet4": []}}
+    captured: dict = {}
+    with patch("subprocess.run", side_effect=_run_with_config(config, captured)):
+        service.set_subnet("10.0.0.0/24", "", subnet_id=5)
+
+    written = json.loads(captured["written"])
+    assert written["Dhcp4"]["subnet4"][0] == {"id": 5, "subnet": "10.0.0.0/24", "pools": []}
+
+
+def test_set_subnet_preserve_les_reservations_existantes():
+    service = _service()
+    reservations = [{"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "192.168.1.5"}]
+    config = {
+        "Dhcp4": {
+            "subnet4": [
+                {"id": 1, "subnet": "192.168.1.0/24", "pools": [], "reservations": reservations}
+            ]
+        }
+    }
+    captured: dict = {}
+    with patch("subprocess.run", side_effect=_run_with_config(config, captured)):
+        service.set_subnet("192.168.1.0/24", "192.168.1.50-192.168.1.99", subnet_id=1)
+
+    written = json.loads(captured["written"])
+    assert written["Dhcp4"]["subnet4"][0]["reservations"] == reservations
 
 
 def test_add_reservation_envoie_la_commande():
