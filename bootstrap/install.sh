@@ -247,6 +247,12 @@ provision_samba_ad() {
         return
     fi
 
+    # Séquence recommandée Samba pour un DC : les services membres entrent en
+    # conflit avec samba-ad-dc (mêmes ports), il faut les désactiver et démasquer
+    # samba-ad-dc avant de l'activer.
+    systemctl disable --now smbd nmbd winbind 2> /dev/null || true
+    systemctl unmask samba-ad-dc 2> /dev/null || true
+
     if systemctl enable --now samba-ad-dc; then
         ok "Service samba-ad-dc activé et démarré"
     else
