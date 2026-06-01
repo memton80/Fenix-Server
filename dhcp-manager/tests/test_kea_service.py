@@ -26,6 +26,10 @@ def _ok(arguments: dict) -> list:
     return [{"result": 0, "arguments": arguments}]
 
 
+def _response(result: int, text: str = "") -> list:
+    return [{"result": result, "text": text}]
+
+
 def _service(password: str = "") -> KeaService:
     """Service Kea déterministe : mot de passe explicite, sans accès fichier."""
     return KeaService(password=password)
@@ -50,6 +54,33 @@ def test_list_leases_mappe_la_reponse():
     assert len(leases) == 1
     assert leases[0].ip_address == "192.168.1.10"
     assert leases[0].state == "active"
+
+
+def test_list_leases_vide_si_resultat_kea_vide():
+    # result == 3 (« vide ») : aucun bail, pas une erreur.
+    service = _service()
+    body = _response(3, "0 IPv4 lease(s) found")
+    with patch("urllib.request.urlopen", return_value=_http_response(body)):
+        assert service.list_leases() == []
+
+
+def test_list_leases_vide_si_texte_aucun_bail():
+    # Texte « 0 IPv4 lease(s) found » même avec un autre code : traité comme vide.
+    service = _service()
+    body = _response(1, "0 IPv4 lease(s) found")
+    with patch("urllib.request.urlopen", return_value=_http_response(body)):
+        assert service.list_leases() == []
+
+
+def test_list_leases_vraie_erreur_leve_runtimeerror():
+    # Une erreur réelle (code 1, autre texte) continue de lever RuntimeError.
+    service = _service()
+    body = _response(1, "boom")
+    with (
+        patch("urllib.request.urlopen", return_value=_http_response(body)),
+        pytest.raises(RuntimeError),
+    ):
+        service.list_leases()
 
 
 # --- plages : lecture/écriture directe de /etc/kea/kea-dhcp4.conf ----------
@@ -79,6 +110,13 @@ def test_list_subnets_lit_le_fichier_via_pkexec_cat():
     assert run.call_args.args[0] == ["pkexec", "cat", _DHCP4_CONFIG]
     assert subnets[0].subnet_id == 1
     assert subnets[0].pool == "192.168.1.100-192.168.1.200"
+
+
+def test_list_subnets_vide_si_subnet4_vide():
+    service = _service()
+    config = {"Dhcp4": {"subnet4": []}}
+    with patch("subprocess.run", return_value=_completed(json.dumps(config))):
+        assert service.list_subnets() == []
 
 
 def test_list_subnets_lecture_echoue_leve_runtimeerror():
