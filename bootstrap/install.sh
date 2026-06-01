@@ -424,6 +424,8 @@ install_desktop_entries() {
     install_one_desktop_entry "update-manager" "fenix-update-manager.desktop" "fenix-update-manager"
     install_one_desktop_entry "server-manager" "fenix-server-manager.desktop" "fenix-server-manager"
     install_one_desktop_entry "ad-manager" "fenix-ad-manager.desktop" "fenix-ad-manager"
+    install_one_desktop_entry "dns-manager" "fenix-dns-manager.desktop" "fenix-dns-manager"
+    install_one_desktop_entry "dhcp-manager" "fenix-dhcp-manager.desktop" "fenix-dhcp-manager"
 
     # Policy Polkit de l'AD Manager (create/modify/delete user & group).
     local ad_policy="$PROJECT_ROOT/ad-manager/polkit/org.fenixserver.ad.policy"
@@ -507,6 +509,36 @@ provision_samba_ad() {
     fi
 }
 
+# --- service DHCP (Kea) -----------------------------------------------------
+
+# Installe Kea via apt et active le serveur DHCPv4. Le Control Agent (API REST
+# locale, port 8000) utilisé par le DHCP Manager est activé en best-effort.
+install_kea() {
+    export DEBIAN_FRONTEND=noninteractive
+    if run_with_progress "Service DHCP (Kea)" \
+        apt-get install -y kea; then
+        ok "Kea installé (kea)"
+    else
+        ko "Échec de l'installation de Kea"
+        return
+    fi
+
+    # Serveur DHCPv4 : activé comme rôle DHCP de Fenix.
+    if systemctl enable --now kea-dhcp4-server; then
+        ok "Service kea-dhcp4-server activé et démarré"
+    else
+        ko "Échec de l'activation de kea-dhcp4-server"
+    fi
+
+    # Control Agent : expose l'API REST locale (port 8000) consommée par le
+    # DHCP Manager. Non bloquant si l'unité est absente ou non configurée.
+    if systemctl enable --now kea-ctrl-agent 2> /dev/null; then
+        ok "Service kea-ctrl-agent activé (API REST locale, port 8000)"
+    else
+        warn "kea-ctrl-agent non activé — l'API REST (port 8000) devra être configurée manuellement"
+    fi
+}
+
 # --- résumé ----------------------------------------------------------------
 
 print_summary() {
@@ -583,6 +615,9 @@ main() {
     step "Configuration du domaine AD"
     install_samba
     provision_samba_ad
+
+    step "Installation du service DHCP (Kea)"
+    install_kea
 
     print_summary
     (( FAILURES == 0 ))
