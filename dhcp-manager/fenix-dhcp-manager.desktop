@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Fenix — Gestionnaire DHCP
+Comment=Gestion des baux, plages et réservations DHCP (Kea)
+Comment[en]=DHCP leases, subnets and reservations management (Kea)
+Exec=fenix-dhcp-manager
+Icon=network-wired
+Terminal=false
+Categories=System;

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Fenix Server</vendor>
+
+  <action id="org.fenixserver.dhcp.set-subnet">
+    <description>Créer ou modifier une plage DHCP</description>
+    <description xml:lang="en">Create or modify a DHCP subnet</description>
+    <message>L'authentification est requise pour modifier une plage DHCP.</message>
+    <message xml:lang="en">Authentication is required to modify a DHCP subnet.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.dhcp.add-reservation">
+    <description>Ajouter une réservation DHCP</description>
+    <description xml:lang="en">Add a DHCP reservation</description>
+    <message>L'authentification est requise pour ajouter une réservation DHCP.</message>
+    <message xml:lang="en">Authentication is required to add a DHCP reservation.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.dhcp.control-service">
+    <description>Contrôler le service DHCP (Kea)</description>
+    <description xml:lang="en">Control the DHCP service (Kea)</description>
+    <message>L'authentification est requise pour contrôler le service DHCP.</message>
+    <message xml:lang="en">Authentication is required to control the DHCP service.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>
