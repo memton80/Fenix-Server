@@ -57,8 +57,39 @@ def test_set_credentials_utilise_au_bind():
     with patch.object(ls, "Server"), patch.object(ls, "Connection") as conn_cls:
         conn_cls.return_value.bound = True
         svc.connect()
+    # Sans realm connu, le nom nu reste tel quel.
     assert conn_cls.call_args.kwargs["user"] == "Administrator"
     assert conn_cls.call_args.kwargs["password"] == "pw"
+
+
+def test_set_credentials_compose_le_upn_depuis_le_realm(tmp_path: Path):
+    conf = tmp_path / "smb.conf"
+    conf.write_text("[global]\n   realm = FENIX.LOCAL\n", encoding="utf-8")
+    svc = LDAPService.from_smb_conf(str(conf))
+    svc.set_credentials("Administrator", "pw")
+    assert svc._bind_dn == "Administrator@FENIX.LOCAL"
+
+
+def test_set_credentials_upn_deja_qualifie_inchange(tmp_path: Path):
+    conf = tmp_path / "smb.conf"
+    conf.write_text("[global]\n   realm = FENIX.LOCAL\n", encoding="utf-8")
+    svc = LDAPService.from_smb_conf(str(conf))
+    svc.set_credentials("admin@AUTRE.LOCAL", "pw")
+    assert svc._bind_dn == "admin@AUTRE.LOCAL"
+
+
+def test_set_credentials_domaine_backslash_inchange(tmp_path: Path):
+    conf = tmp_path / "smb.conf"
+    conf.write_text("[global]\n   realm = FENIX.LOCAL\n", encoding="utf-8")
+    svc = LDAPService.from_smb_conf(str(conf))
+    svc.set_credentials("FENIX\\admin", "pw")
+    assert svc._bind_dn == "FENIX\\admin"
+
+
+def test_set_credentials_sans_realm_reste_nu():
+    svc = LDAPService("ldap://dc", "dc=x")
+    svc.set_credentials("Administrator", "pw")
+    assert svc._bind_dn == "Administrator"
 
 
 def test_connect_echec_leve_runtimeerror():

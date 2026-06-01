@@ -33,7 +33,15 @@ def _realm_to_base_dn(realm: str) -> str:
 class LDAPService:
     """Gère la connexion LDAP au contrôleur de domaine et les requêtes de base."""
 
-    def __init__(self, server_uri: str, base_dn: str, *, bind_dn: str = "", password: str = ""):
+    def __init__(
+        self,
+        server_uri: str,
+        base_dn: str,
+        *,
+        bind_dn: str = "",
+        password: str = "",
+        realm: str = "",
+    ):
         """Initialise le service LDAP.
 
         Args:
@@ -41,11 +49,14 @@ class LDAPService:
             base_dn: Base DN de recherche, ex. ``"dc=example,dc=lan"``.
             bind_dn: DN de connexion (vide pour une liaison anonyme).
             password: Mot de passe associé à ``bind_dn``.
+            realm: Realm Kerberos du domaine (ex. ``"FENIX.LOCAL"``) ; sert à
+                composer le UPN d'un utilisateur saisi sans domaine.
         """
         self._server_uri = server_uri
         self._base_dn = base_dn
         self._bind_dn = bind_dn
         self._password = password
+        self._realm = realm
         self._connection: Connection | None = None
 
     @property
@@ -61,12 +72,23 @@ class LDAPService:
     def set_credentials(self, bind_dn: str, password: str) -> None:
         """Définit les identifiants de liaison (bind) utilisés par :meth:`connect`.
 
+        Si ``bind_dn`` est un simple nom d'utilisateur (sans ``@`` ni ``\\``) et
+        qu'un realm est connu, il est complété en UPN ``utilisateur@REALM``
+        (ex. ``Administrator`` -> ``Administrator@FENIX.LOCAL``).
+
         Args:
-            bind_dn: Identité de connexion (DN, UPN ``user@realm`` ou nom).
+            bind_dn: Identité de connexion (DN, UPN ``user@realm``, ``DOMAINE\\user``
+                ou simple nom d'utilisateur).
             password: Mot de passe associé.
         """
-        self._bind_dn = bind_dn
+        self._bind_dn = self._qualify_user(bind_dn)
         self._password = password
+
+    def _qualify_user(self, user: str) -> str:
+        """Complète un nom d'utilisateur nu en UPN ``user@REALM`` si possible."""
+        if user and self._realm and "@" not in user and "\\" not in user:
+            return f"{user}@{self._realm}"
+        return user
 
     @classmethod
     def from_smb_conf(cls, path: str = SMB_CONF_PATH) -> LDAPService:
@@ -97,8 +119,14 @@ class LDAPService:
         if not realm:
             raise ValueError(f"Aucun 'realm' trouvé dans {path}")
 
-        realm = realm.lower()
-        return cls(server_uri=f"ldap://{realm}", base_dn=_realm_to_base_dn(realm))
+        # DNS/DN insensibles à la casse → minuscules ; realm Kerberos (UPN) en
+        # majuscules par convention.
+        realm_dns = realm.lower()
+        return cls(
+            server_uri=f"ldap://{realm_dns}",
+            base_dn=_realm_to_base_dn(realm_dns),
+            realm=realm.upper(),
+        )
 
     @property
     def connection(self) -> Connection:
