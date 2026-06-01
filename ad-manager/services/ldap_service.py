@@ -3,19 +3,31 @@
 La connexion à l'annuaire se fait via ``ldap3`` (jamais ``python-ldap``, jamais
 en parsant la sortie de ``samba-tool``). Le domaine et l'adresse du contrôleur
 de domaine sont lus depuis ``/etc/samba/smb.conf``.
-
-Squelette : signatures uniquement, aucune implémentation.
 """
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ldap3 import ALL, MODIFY_REPLACE, SUBTREE, Connection, Server
+
 if TYPE_CHECKING:
-    from ldap3 import Connection
+    from ldap3.abstract.entry import Entry
+
+logger = logging.getLogger(__name__)
 
 # Fichier de configuration Samba d'où sont lus le domaine et le DC.
 SMB_CONF_PATH = "/etc/samba/smb.conf"
+
+# Jeton ldap3 « tous les attributs » pour une recherche.
+_ALL_ATTRIBUTES = "*"
+
+
+def _realm_to_base_dn(realm: str) -> str:
+    """Convertit un realm DNS en base DN LDAP (``example.lan`` -> ``dc=example,dc=lan``)."""
+    return ",".join(f"dc={part}" for part in realm.split(".") if part)
 
 
 class LDAPService:
@@ -30,14 +42,28 @@ class LDAPService:
             bind_dn: DN de connexion (vide pour une liaison anonyme).
             password: Mot de passe associé à ``bind_dn``.
         """
-        raise NotImplementedError
+        self._server_uri = server_uri
+        self._base_dn = base_dn
+        self._bind_dn = bind_dn
+        self._password = password
+        self._connection: Connection | None = None
+
+    @property
+    def server_uri(self) -> str:
+        """URI du serveur LDAP (contrôleur de domaine)."""
+        return self._server_uri
+
+    @property
+    def base_dn(self) -> str:
+        """Base DN de recherche du domaine."""
+        return self._base_dn
 
     @classmethod
     def from_smb_conf(cls, path: str = SMB_CONF_PATH) -> LDAPService:
         """Construit un :class:`LDAPService` depuis la configuration Samba.
 
-        Lit le domaine (``realm``/``workgroup``) et l'hôte du DC dans
-        ``smb.conf`` pour en déduire ``server_uri`` et ``base_dn``.
+        Lit le ``realm`` dans la section ``[global]`` de ``smb.conf`` pour en
+        déduire ``server_uri`` (``ldap://<realm>``) et ``base_dn``.
 
         Args:
             path: Chemin du fichier ``smb.conf``.
@@ -47,9 +73,22 @@ class LDAPService:
 
         Raises:
             FileNotFoundError: si le fichier de configuration est absent.
-            ValueError: si la configuration ne permet pas de déduire le domaine.
+            ValueError: si aucun ``realm`` n'est défini.
         """
-        raise NotImplementedError
+        realm = ""
+        for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line[0] in "#;[":
+                continue
+            key, sep, value = line.partition("=")
+            if sep and key.strip().lower() == "realm":
+                realm = value.strip()
+
+        if not realm:
+            raise ValueError(f"Aucun 'realm' trouvé dans {path}")
+
+        realm = realm.lower()
+        return cls(server_uri=f"ldap://{realm}", base_dn=_realm_to_base_dn(realm))
 
     @property
     def connection(self) -> Connection:
@@ -58,7 +97,9 @@ class LDAPService:
         Raises:
             RuntimeError: si la connexion n'est pas établie.
         """
-        raise NotImplementedError
+        if self._connection is None:
+            raise RuntimeError("Connexion LDAP non établie")
+        return self._connection
 
     def connect(self) -> None:
         """Établit et lie (bind) la connexion LDAP au contrôleur de domaine.
@@ -66,19 +107,29 @@ class LDAPService:
         Raises:
             RuntimeError: en cas d'échec de connexion ou de liaison.
         """
-        raise NotImplementedError
+        try:
+            server = Server(self._server_uri, get_info=ALL)
+            self._connection = Connection(
+                server,
+                user=self._bind_dn or None,
+                password=self._password or None,
+                auto_bind=True,
+            )
+        except Exception as exc:
+            logger.error("Connexion LDAP échouée (%s): %s", self._server_uri, exc)
+            raise RuntimeError(f"Connexion LDAP échouée: {self._server_uri}") from exc
 
     def disconnect(self) -> None:
         """Ferme la connexion LDAP si elle est ouverte."""
-        raise NotImplementedError
+        if self._connection is not None:
+            self._connection.unbind()
+            self._connection = None
 
     def is_connected(self) -> bool:
-        """Indique si une connexion LDAP est actuellement établie."""
-        raise NotImplementedError
+        """Indique si une connexion LDAP est actuellement établie et liée."""
+        return self._connection is not None and bool(self._connection.bound)
 
-    def search(
-        self, search_filter: str, attributes: list[str] | None = None
-    ) -> list[dict[str, object]]:
+    def search(self, search_filter: str, attributes: list[str] | None = None) -> list[Entry]:
         """Effectue une recherche LDAP sous la base DN du domaine.
 
         Args:
@@ -86,14 +137,24 @@ class LDAPService:
             attributes: Attributs à retourner (tous par défaut si ``None``).
 
         Returns:
-            La liste des entrées trouvées, chaque entrée étant un mapping
-            ``attribut -> valeur``.
+            La liste des entrées ``ldap3`` trouvées.
 
         Raises:
             RuntimeError: si la connexion n'est pas établie ou si la recherche
                 échoue.
         """
-        raise NotImplementedError
+        conn = self.connection
+        try:
+            conn.search(
+                self._base_dn,
+                search_filter,
+                search_scope=SUBTREE,
+                attributes=attributes if attributes is not None else _ALL_ATTRIBUTES,
+            )
+        except Exception as exc:
+            logger.error("Recherche LDAP échouée (%s): %s", search_filter, exc)
+            raise RuntimeError(f"Recherche LDAP échouée: {search_filter}") from exc
+        return list(conn.entries)
 
     def add(self, dn: str, object_classes: list[str], attributes: dict[str, object]) -> None:
         """Crée une entrée LDAP.
@@ -106,19 +167,36 @@ class LDAPService:
         Raises:
             RuntimeError: si l'opération échoue.
         """
-        raise NotImplementedError
+        conn = self.connection
+        try:
+            success = conn.add(dn, object_classes, attributes)
+        except Exception as exc:
+            logger.error("Ajout LDAP échoué (%s): %s", dn, exc)
+            raise RuntimeError(f"Ajout LDAP échoué: {dn}") from exc
+        self._ensure(success, "ajout", dn)
 
     def modify(self, dn: str, changes: dict[str, object]) -> None:
-        """Modifie les attributs d'une entrée LDAP existante.
+        """Remplace les attributs d'une entrée LDAP existante.
 
         Args:
             dn: Distinguished Name de l'entrée à modifier.
-            changes: Modifications à appliquer (attribut -> nouvelle valeur).
+            changes: Modifications à appliquer (attribut -> nouvelle valeur ;
+                une valeur scalaire est encapsulée dans une liste).
 
         Raises:
             RuntimeError: si l'opération échoue.
         """
-        raise NotImplementedError
+        conn = self.connection
+        ldap_changes = {
+            attr: [(MODIFY_REPLACE, value if isinstance(value, list) else [value])]
+            for attr, value in changes.items()
+        }
+        try:
+            success = conn.modify(dn, ldap_changes)
+        except Exception as exc:
+            logger.error("Modification LDAP échouée (%s): %s", dn, exc)
+            raise RuntimeError(f"Modification LDAP échouée: {dn}") from exc
+        self._ensure(success, "modification", dn)
 
     def delete(self, dn: str) -> None:
         """Supprime une entrée LDAP.
@@ -129,4 +207,25 @@ class LDAPService:
         Raises:
             RuntimeError: si l'opération échoue.
         """
-        raise NotImplementedError
+        conn = self.connection
+        try:
+            success = conn.delete(dn)
+        except Exception as exc:
+            logger.error("Suppression LDAP échouée (%s): %s", dn, exc)
+            raise RuntimeError(f"Suppression LDAP échouée: {dn}") from exc
+        self._ensure(success, "suppression", dn)
+
+    def _ensure(self, success: object, action: str, dn: str) -> None:
+        """Lève ``RuntimeError`` si une opération ``ldap3`` a renvoyé un échec.
+
+        Args:
+            success: Valeur de retour booléenne de l'opération ``ldap3``.
+            action: Nom de l'opération (pour le message d'erreur).
+            dn: DN concerné.
+
+        Raises:
+            RuntimeError: si ``success`` est faux.
+        """
+        if not success:
+            result = getattr(self._connection, "result", None)
+            raise RuntimeError(f"Échec LDAP ({action}) sur {dn}: {result}")
