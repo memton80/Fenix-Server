@@ -7,32 +7,215 @@
 #
 #     sudo bootstrap/install.sh
 #
+# Interface 100 % ANSI pur (ni whiptail ni dialog) : couleurs, bannière ASCII,
+# barres de progression Unicode et encadrés box-drawing. Tout est désactivé
+# automatiquement si la sortie n'est pas un terminal interactif.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# --- présentation ----------------------------------------------------------
+# --- présentation : couleurs et capacités terminal -------------------------
 
 if [[ -t 1 ]]; then
-    RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+    INTERACTIVE=1
+    RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
+    CYAN=$'\033[36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 else
-    RED=""; GREEN=""; YELLOW=""; BOLD=""; RESET=""
+    INTERACTIVE=0
+    RED=""; GREEN=""; YELLOW=""; CYAN=""; BOLD=""; DIM=""; RESET=""
 fi
+
+# tput n'est utilisé que pour la largeur et le curseur, et seulement en mode
+# interactif avec un TERM défini.
+TPUT_OK=0
+if [[ $INTERACTIVE -eq 1 && -n "${TERM:-}" ]] && command -v tput > /dev/null 2>&1; then
+    TPUT_OK=1
+fi
+
+term_cols() {
+    if [[ $TPUT_OK -eq 1 ]]; then
+        tput cols 2> /dev/null || printf '80'
+    else
+        printf '80'
+    fi
+}
+
+cursor_hide() { [[ $TPUT_OK -eq 1 ]] && tput civis 2> /dev/null || true; }
+cursor_show() { [[ $TPUT_OK -eq 1 ]] && tput cnorm 2> /dev/null || true; }
 
 SUMMARY=()
 FAILURES=0
+WARNINGS=0
+
+# --- bannière ASCII art ----------------------------------------------------
+
+print_banner() {
+    local cols centered pad line
+    cols="$(term_cols)"
+
+    # "FENIX" en police bloc (ANSI Shadow), largeur 37 colonnes par ligne.
+    local -a art=(
+        '███████╗███████╗███╗   ██╗██╗██╗  ██╗'
+        '██╔════╝██╔════╝████╗  ██║██║╚██╗██╔╝'
+        '█████╗  █████╗  ██╔██╗ ██║██║ ╚███╔╝ '
+        '██╔══╝  ██╔══╝  ██║╚██╗██║██║ ██╔██╗ '
+        '██║     ███████╗██║ ╚████║██║██╔╝ ██╗'
+        '╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝'
+    )
+    local art_width=37
+
+    pad=$(( (cols - art_width) / 2 ))
+    (( pad < 0 )) && pad=0
+    printf -v centered '%*s' "$pad" ''
+
+    printf '\n'
+    for line in "${art[@]}"; do
+        printf '%s%s%s%s\n' "$centered" "$BOLD$CYAN" "$line" "$RESET"
+    done
+
+    # Sous-titre "S E R V E R" centré sous la bannière.
+    local subtitle='S E R V E R'
+    pad=$(( (cols - ${#subtitle}) / 2 ))
+    (( pad < 0 )) && pad=0
+    printf -v centered '%*s' "$pad" ''
+    printf '%s%s%s%s\n' "$centered" "$DIM" "$subtitle" "$RESET"
+
+    local tagline='Installation — Debian 13 · KDE Plasma Wayland'
+    pad=$(( (cols - ${#tagline}) / 2 ))
+    (( pad < 0 )) && pad=0
+    printf -v centered '%*s' "$pad" ''
+    printf '%s%s%s%s\n\n' "$centered" "$DIM" "$tagline" "$RESET"
+}
+
+# --- encadrés box-drawing pour les sections --------------------------------
+
+INNER_WIDTH=56
+
+box_line() {
+    # Construit une ligne d'INNER_WIDTH fois le caractère passé en argument.
+    local ch="$1" i out=''
+    for ((i = 0; i < INNER_WIDTH; i++)); do out+="$ch"; done
+    printf '%s' "$out"
+}
+
+step() {
+    local title="$1" clen pad spaces top
+    top="$(box_line '═')"
+
+    # ${#title} compte les caractères (locale UTF-8) : padding fiable même
+    # avec des accents, contrairement à %-*s qui compte les octets.
+    clen=${#title}
+    pad=$(( INNER_WIDTH - 2 - clen ))
+    (( pad < 0 )) && pad=0
+    printf -v spaces '%*s' "$pad" ''
+
+    printf '\n%s╔%s╗%s\n' "$BOLD$CYAN" "$top" "$RESET"
+    printf '%s║%s %s%s%s%s %s║%s\n' \
+        "$BOLD$CYAN" "$RESET" "$BOLD" "$title" "$RESET" "$spaces" "$BOLD$CYAN" "$RESET"
+    printf '%s╚%s╝%s\n' "$BOLD$CYAN" "$top" "$RESET"
+}
+
+# --- comptes rendus d'étape ------------------------------------------------
 
 ok()   { printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$1"; SUMMARY+=("${GREEN}✓${RESET} $1"); }
 ko()   { printf '  %s✗%s %s\n' "$RED" "$RESET" "$1"; SUMMARY+=("${RED}✗${RESET} $1"); FAILURES=$((FAILURES + 1)); }
-warn() { printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$1"; SUMMARY+=("${YELLOW}!${RESET} $1"); }
-step() { printf '\n%s== %s ==%s\n' "$BOLD" "$1" "$RESET"; }
+warn() { printf '  %s⚠%s %s\n' "$YELLOW" "$RESET" "$1"; SUMMARY+=("${YELLOW}⚠${RESET} $1"); WARNINGS=$((WARNINGS + 1)); }
+
+# --- barre de progression --------------------------------------------------
+
+PROGRESS_WIDTH=42
+
+draw_progress() {
+    # draw_progress <label> <pourcentage>
+    local label="$1" pct="$2" filled empty bar='' i
+    filled=$(( pct * PROGRESS_WIDTH / 100 ))
+    (( filled > PROGRESS_WIDTH )) && filled=$PROGRESS_WIDTH
+    empty=$(( PROGRESS_WIDTH - filled ))
+    for ((i = 0; i < filled; i++)); do bar+='█'; done
+    for ((i = 0; i < empty; i++)); do bar+='░'; done
+    printf '\r  %s%s%s [%s%s%s] %3d%%' \
+        "$CYAN" "$label" "$RESET" "$GREEN" "$bar" "$RESET" "$pct"
+}
+
+# run_with_progress <label> <commande...>
+# Exécute la commande en tâche de fond et anime une barre qui se remplit en
+# temps réel. En l'absence de progression réelle (apt/pip), la barre tend
+# progressivement vers 95 %, puis saute à 100 % au succès. Retourne le code
+# de sortie de la commande. En cas d'échec, affiche les dernières lignes de log.
+run_with_progress() {
+    local label="$1"; shift
+    local logf rc=0
+    logf="$(mktemp)"
+
+    # Sans terminal interactif : exécution simple, sans animation.
+    if [[ $INTERACTIVE -eq 0 ]]; then
+        "$@" > "$logf" 2>&1 || rc=$?
+        if (( rc != 0 )); then
+            sed 's/^/      /' "$logf" | tail -n 10
+        fi
+        rm -f "$logf"
+        return $rc
+    fi
+
+    "$@" > "$logf" 2>&1 &
+    local pid=$!
+
+    cursor_hide
+    local pct=0
+    while kill -0 "$pid" 2> /dev/null; do
+        # Approche asymptotique de 95 % : remplissage visible et continu.
+        (( pct < 95 )) && pct=$(( pct + (95 - pct + 9) / 10 ))
+        draw_progress "$label" "$pct"
+        sleep 0.2
+    done
+    wait "$pid" || rc=$?
+
+    if (( rc == 0 )); then
+        draw_progress "$label" 100
+    fi
+    printf '\n'
+    cursor_show
+
+    if (( rc != 0 )); then
+        printf '  %s── détail de l'\''erreur ──%s\n' "$DIM" "$RESET"
+        sed 's/^/      /' "$logf" | tail -n 10
+    fi
+    rm -f "$logf"
+    return $rc
+}
 
 require_root() {
     if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-        printf '%sCe script doit être lancé en root (sudo bootstrap/install.sh).%s\n' "$RED" "$RESET" >&2
+        printf '%s✗ Ce script doit être lancé en root (sudo bootstrap/install.sh).%s\n' \
+            "$RED$BOLD" "$RESET" >&2
         exit 1
     fi
+}
+
+# --- saisie masquée de mot de passe ----------------------------------------
+
+# read_password <prompt> <nom_variable>
+# Lit un mot de passe en affichant un '*' par caractère, gère le retour arrière.
+read_password() {
+    local prompt="$1" __var="$2" pass='' char
+    printf '%s' "$prompt"
+    while IFS= read -r -s -n1 char; do
+        # Entrée (chaîne vide) → fin de saisie.
+        [[ -z "$char" ]] && break
+        if [[ "$char" == $'\177' || "$char" == $'\b' ]]; then
+            if [[ -n "$pass" ]]; then
+                pass="${pass%?}"
+                printf '\b \b'
+            fi
+        else
+            pass+="$char"
+            printf '*'
+        fi
+    done
+    printf '\n'
+    printf -v "$__var" '%s' "$pass"
 }
 
 # --- prérequis -------------------------------------------------------------
@@ -90,7 +273,8 @@ check_tpm() {
 
 install_kde() {
     export DEBIAN_FRONTEND=noninteractive
-    if apt-get update -qq && apt-get install -y kde-plasma-desktop sddm; then
+    if run_with_progress "KDE Plasma + SDDM" \
+        bash -c 'apt-get update -qq && apt-get install -y kde-plasma-desktop sddm'; then
         ok "KDE Plasma + SDDM installés"
     else
         ko "Échec de l'installation de KDE Plasma / SDDM"
@@ -113,7 +297,8 @@ EOF
 install_system_deps() {
     export DEBIAN_FRONTEND=noninteractive
     # Sur Debian 13, policykit-1 est obsolète : remplacé par polkitd + pkexec.
-    if apt-get install -y python3-pip packagekit python3-dasbus polkitd pkexec; then
+    if run_with_progress "Dépendances système" \
+        apt-get install -y python3-pip packagekit python3-dasbus polkitd pkexec; then
         ok "Dépendances système installées (python3-pip, packagekit, python3-dasbus, polkitd, pkexec)"
     else
         ko "Échec de l'installation des dépendances système"
@@ -128,7 +313,8 @@ install_python_deps() {
     fi
     # Debian 13 applique PEP 668 (environnement géré) : installation système
     # assumée pour un serveur dédié Fenix.
-    if pip3 install --break-system-packages -r "$req"; then
+    if run_with_progress "Paquets Python (pip)" \
+        pip3 install --break-system-packages -r "$req"; then
         ok "Dépendances Python installées (requirements.txt)"
     else
         ko "Échec de l'installation des dépendances Python"
@@ -144,7 +330,7 @@ install_polkit_policies() {
     for policy in "$PROJECT_ROOT"/*/polkit/org.fenixserver.*.policy; do
         if cp "$policy" "$dest/"; then
             count=$((count + 1))
-            printf '     → %s\n' "$(basename "$policy")"
+            printf '     %s→%s %s\n' "$DIM" "$RESET" "$(basename "$policy")"
         fi
     done
     shopt -u nullglob
@@ -213,7 +399,8 @@ install_desktop_entries() {
 
 install_samba() {
     export DEBIAN_FRONTEND=noninteractive
-    if apt-get install -y samba samba-common-bin smbclient; then
+    if run_with_progress "Samba (AD DC)" \
+        apt-get install -y samba samba-common-bin smbclient; then
         ok "Samba installé (samba, samba-common-bin, smbclient)"
     else
         ko "Échec de l'installation de Samba"
@@ -232,10 +419,8 @@ provision_samba_ad() {
     read -r -p "    Nom de domaine court (ex: FENIX) : " domain
     read -r -p "    Realm FQDN (ex: FENIX.LOCAL) : " realm
     while true; do
-        read -r -s -p "    Mot de passe administrateur : " adminpass
-        printf '\n'
-        read -r -s -p "    Confirmer le mot de passe : " adminpass_confirm
-        printf '\n'
+        read_password "    Mot de passe administrateur : " adminpass
+        read_password "    Confirmer le mot de passe : " adminpass_confirm
         if [[ "$adminpass" == "$adminpass_confirm" ]]; then
             break
         fi
@@ -247,11 +432,12 @@ provision_samba_ad() {
         mv /etc/samba/smb.conf "/etc/samba/smb.conf.bak.$(date +%Y%m%d%H%M%S)"
     fi
 
-    if samba-tool domain provision \
-        --use-rfc2307 \
-        --realm="$realm" \
-        --domain="$domain" \
-        --adminpass="$adminpass"; then
+    if run_with_progress "Provisionnement du domaine AD" \
+        samba-tool domain provision \
+            --use-rfc2307 \
+            --realm="$realm" \
+            --domain="$domain" \
+            --adminpass="$adminpass"; then
         ok "Domaine AD provisionné (realm $realm, domaine $domain)"
     else
         ko "Échec du provisionnement du domaine AD"
@@ -283,26 +469,47 @@ provision_samba_ad() {
 # --- résumé ----------------------------------------------------------------
 
 print_summary() {
-    step "Résumé"
-    local line
+    local top line
+    top="$(box_line '═')"
+
+    printf '\n%s╔%s╗%s\n' "$BOLD$CYAN" "$top" "$RESET"
+    local title="Résumé de l'installation"
+    local clen=${#title} pad spaces
+    pad=$(( INNER_WIDTH - 2 - clen )); (( pad < 0 )) && pad=0
+    printf -v spaces '%*s' "$pad" ''
+    printf '%s║%s %s%s%s%s %s║%s\n' \
+        "$BOLD$CYAN" "$RESET" "$BOLD" "$title" "$RESET" "$spaces" "$BOLD$CYAN" "$RESET"
+    printf '%s╚%s╝%s\n' "$BOLD$CYAN" "$top" "$RESET"
+
     for line in "${SUMMARY[@]}"; do
         printf '  %s\n' "$line"
     done
+
     printf '\n'
+    local ok_count=$(( ${#SUMMARY[@]} - FAILURES - WARNINGS ))
+    printf '  %s✓ %d réussie(s)%s   %s⚠ %d avertissement(s)%s   %s✗ %d échec(s)%s\n\n' \
+        "$GREEN" "$ok_count" "$RESET" \
+        "$YELLOW" "$WARNINGS" "$RESET" \
+        "$RED" "$FAILURES" "$RESET"
+
     if (( FAILURES > 0 )); then
-        printf '%sInstallation incomplète : %d étape(s) en échec.%s\n' "$RED" "$FAILURES" "$RESET"
+        printf '%s✗ Installation incomplète : %d étape(s) en échec.%s\n' \
+            "$RED$BOLD" "$FAILURES" "$RESET"
     else
-        printf '%sInstallation terminée avec succès. Redémarrez pour démarrer sous SDDM/Wayland.%s\n' \
-            "$GREEN" "$RESET"
+        printf '%s✓ Installation terminée avec succès. Redémarrez pour démarrer sous SDDM/Wayland.%s\n' \
+            "$GREEN$BOLD" "$RESET"
     fi
 }
 
 # --- enchaînement ----------------------------------------------------------
 
+# Restaure le curseur si le script est interrompu pendant une barre de progression.
+trap cursor_show EXIT INT TERM
+
 main() {
     require_root
 
-    printf '%sFenix Server — installation%s\n' "$BOLD" "$RESET"
+    print_banner
 
     step "Vérification des prérequis"
     check_os
