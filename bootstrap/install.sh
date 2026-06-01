@@ -511,10 +511,12 @@ provision_samba_ad() {
 
 # --- service DHCP (Kea) -----------------------------------------------------
 
-# Installe Kea via apt, active le serveur DHCPv4, puis génère un mot de passe
-# d'API, configure le Control Agent (auth HTTP basic, API REST locale port 8000)
-# et le démarre. Le mot de passe est partagé avec le DHCP Manager via
-# /etc/kea/kea-api-password.
+# Installe Kea via apt, génère la config du serveur DHCPv4
+# (/etc/kea/kea-dhcp4.conf : interface détectée, socket de contrôle, hooks
+# lease_cmds/subnet_cmds), génère un mot de passe d'API et la config du Control
+# Agent (auth HTTP basic, API REST locale port 8000, même socket de contrôle),
+# puis redémarre kea-dhcp4-server avant kea-ctrl-agent. Le mot de passe est
+# partagé avec le DHCP Manager via /etc/kea/kea-api-password.
 install_kea() {
     export DEBIAN_FRONTEND=noninteractive
     if run_with_progress "Service DHCP (Kea)" \
@@ -525,11 +527,67 @@ install_kea() {
         return
     fi
 
-    # Serveur DHCPv4 : activé comme rôle DHCP de Fenix.
-    if systemctl enable --now kea-dhcp4-server; then
-        ok "Service kea-dhcp4-server activé et démarré"
+    mkdir -p /etc/kea
+
+    # --- serveur DHCPv4 : génération de /etc/kea/kea-dhcp4.conf ------------
+    local dhcp4_conf="/etc/kea/kea-dhcp4.conf"
+
+    # Interface d'écoute détectée depuis la route par défaut.
+    local iface
+    iface="$(ip route | grep -m1 default | sed -n 's/.*dev \([^ ]*\).*/\1/p')"
+    if [[ -z "$iface" ]]; then
+        warn "Interface réseau par défaut introuvable — écoute sur toutes (\"*\")"
+        iface='*'
+    fi
+
+    # Répertoire des bibliothèques de hooks Kea (chemin multiarch Debian),
+    # détecté depuis l'emplacement réel de libdhcp_lease_cmds.so si possible.
+    local hooks_dir="/usr/lib/x86_64-linux-gnu/kea/hooks"
+    local detected_hook
+    detected_hook="$(find /usr/lib -name libdhcp_lease_cmds.so 2> /dev/null | head -n1)"
+    [[ -n "$detected_hook" ]] && hooks_dir="$(dirname "$detected_hook")"
+
+    # Socket de contrôle UNIX partagé avec le Control Agent (cf. control-sockets
+    # de kea-ctrl-agent.conf, même chemin) + hooks lease_cmds / subnet_cmds.
+    if cat > "$dhcp4_conf" <<EOF
+{
+  "Dhcp4": {
+    "interfaces-config": {
+      "interfaces": [ "$iface" ]
+    },
+    "control-socket": {
+      "socket-type": "unix",
+      "socket-name": "/run/kea/kea4-ctrl-socket"
+    },
+    "lease-database": {
+      "type": "memfile",
+      "lfc-interval": 3600
+    },
+    "hooks-libraries": [
+      { "library": "$hooks_dir/libdhcp_lease_cmds.so" },
+      { "library": "$hooks_dir/libdhcp_subnet_cmds.so" }
+    ],
+    "subnet4": [],
+    "loggers": [
+      { "name": "kea-dhcp4", "severity": "INFO" }
+    ]
+  }
+}
+EOF
+    then
+        chmod 644 "$dhcp4_conf"
+        ok "Serveur DHCPv4 configuré ($dhcp4_conf, interface $iface, hooks lease/subnet)"
     else
-        ko "Échec de l'activation de kea-dhcp4-server"
+        ko "Échec de la configuration du serveur DHCPv4 ($dhcp4_conf)"
+        return
+    fi
+
+    # Activation au démarrage ; le (re)démarrage effectif a lieu en fin de
+    # fonction, une fois toutes les configs écrites.
+    if systemctl enable kea-dhcp4-server 2> /dev/null; then
+        ok "Service kea-dhcp4-server activé au démarrage"
+    else
+        warn "Activation au démarrage de kea-dhcp4-server impossible"
     fi
 
     # Control Agent : expose l'API REST locale (port 8000) consommée par le
@@ -539,8 +597,6 @@ install_kea() {
     local api_user="fenix"
     local api_password
     api_password="$(openssl rand -hex 16)"
-
-    mkdir -p /etc/kea
 
     # Mot de passe destiné au DHCP Manager (client), qui le lit via `pkexec cat`.
     # Strict 600 root:root : aucun accès hors root, pas besoin du groupe _kea.
@@ -597,10 +653,24 @@ EOF
         return
     fi
 
-    if systemctl enable --now kea-ctrl-agent; then
-        ok "Service kea-ctrl-agent activé (API REST locale, port 8000)"
+    if systemctl enable kea-ctrl-agent 2> /dev/null; then
+        ok "Service kea-ctrl-agent activé au démarrage"
     else
-        ko "Échec de l'activation de kea-ctrl-agent"
+        warn "Activation au démarrage de kea-ctrl-agent impossible"
+    fi
+
+    # (Re)démarrage dans l'ordre : le serveur DHCPv4 crée le socket de contrôle,
+    # le Control Agent s'y connecte ensuite — d'où kea-dhcp4-server en premier.
+    if systemctl restart kea-dhcp4-server; then
+        ok "Service kea-dhcp4-server (re)démarré"
+    else
+        ko "Échec du (re)démarrage de kea-dhcp4-server"
+    fi
+
+    if systemctl restart kea-ctrl-agent; then
+        ok "Service kea-ctrl-agent (re)démarré (API REST locale, port 8000)"
+    else
+        ko "Échec du (re)démarrage de kea-ctrl-agent"
     fi
 }
 
