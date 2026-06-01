@@ -1,7 +1,8 @@
-"""Tests pour services.role_service — RoleRegistry, Polkit et systemd mockés."""
+"""Tests pour services.role_service — RoleRegistry, Polkit et subprocess mockés."""
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,78 +65,91 @@ def test_list_roles_vide():
 # --- enable_role -----------------------------------------------------------
 
 
-def test_enable_role_enable_puis_start():
+def test_enable_role_lance_systemctl_enable_now():
     registry = _registry([_role("ad", "smbd")])
     service, polkit = _service(registry, authorized=True)
-    manager = MagicMock()
 
-    with patch.object(rs, "get_service_proxy", return_value=manager) as proxy:
+    with patch("subprocess.run") as run:
         service.enable_role("ad")
 
     polkit.check_authorization.assert_called_once_with(rs.POLKIT_ACTION_ENABLE_ROLE)
-    proxy.assert_called_once_with(rs.SYSTEMD_SERVICE, rs.SYSTEMD_OBJECT)
-    manager.EnableUnitFiles.assert_called_once_with(["smbd.service"], False, True)
-    manager.StartUnit.assert_called_once_with("smbd.service", rs._JOB_MODE_REPLACE)
+    run.assert_called_once()
+    assert run.call_args.args[0] == ["pkexec", "systemctl", "enable", "--now", "smbd.service"]
+    assert run.call_args.kwargs["check"] is True
 
 
 def test_enable_role_refuse_par_polkit_leve_permissionerror():
     registry = _registry([_role("ad", "smbd")])
     service, polkit = _service(registry, authorized=False)
 
-    with patch.object(rs, "get_service_proxy") as proxy:
+    with patch("subprocess.run") as run:
         with pytest.raises(PermissionError):
             service.enable_role("ad")
 
     polkit.check_authorization.assert_called_once_with(rs.POLKIT_ACTION_ENABLE_ROLE)
-    proxy.assert_not_called()  # vérif Polkit AVANT toute action systemd
+    run.assert_not_called()  # vérif Polkit AVANT toute action systemctl
 
 
 def test_enable_role_inconnu_leve_keyerror():
     registry = _registry([_role("ad", "smbd")])
     service, polkit = _service(registry)
 
-    with patch.object(rs, "get_service_proxy") as proxy:
+    with patch("subprocess.run") as run:
         with pytest.raises(KeyError):
             service.enable_role("inexistant")
 
     polkit.check_authorization.assert_not_called()
-    proxy.assert_not_called()
+    run.assert_not_called()
 
 
 def test_enable_role_normalise_le_nom_d_unite():
     registry = _registry([_role("custom", "monservice.socket")])
     service, _ = _service(registry)
-    manager = MagicMock()
 
-    with patch.object(rs, "get_service_proxy", return_value=manager):
+    with patch("subprocess.run") as run:
         service.enable_role("custom")
 
     # Un suffixe d'unité connu est conservé tel quel.
-    manager.StartUnit.assert_called_once_with("monservice.socket", rs._JOB_MODE_REPLACE)
+    assert run.call_args.args[0] == [
+        "pkexec",
+        "systemctl",
+        "enable",
+        "--now",
+        "monservice.socket",
+    ]
+
+
+def test_enable_role_echec_systemctl_leve_runtimeerror():
+    registry = _registry([_role("ad", "smbd")])
+    service, _ = _service(registry, authorized=True)
+
+    err = subprocess.CalledProcessError(1, ["pkexec", "systemctl"], stderr="unit introuvable")
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError, match="systemctl échouée"):
+            service.enable_role("ad")
 
 
 # --- disable_role ----------------------------------------------------------
 
 
-def test_disable_role_stop_puis_disable():
+def test_disable_role_lance_systemctl_disable_now():
     registry = _registry([_role("ad", "smbd")])
     service, polkit = _service(registry, authorized=True)
-    manager = MagicMock()
 
-    with patch.object(rs, "get_service_proxy", return_value=manager):
+    with patch("subprocess.run") as run:
         service.disable_role("ad")
 
     polkit.check_authorization.assert_called_once_with(rs.POLKIT_ACTION_DISABLE_ROLE)
-    manager.StopUnit.assert_called_once_with("smbd.service", rs._JOB_MODE_REPLACE)
-    manager.DisableUnitFiles.assert_called_once_with(["smbd.service"], False)
+    run.assert_called_once()
+    assert run.call_args.args[0] == ["pkexec", "systemctl", "disable", "--now", "smbd.service"]
 
 
 def test_disable_role_refuse_par_polkit_leve_permissionerror():
     registry = _registry([_role("ad", "smbd")])
     service, _ = _service(registry, authorized=False)
 
-    with patch.object(rs, "get_service_proxy") as proxy:
+    with patch("subprocess.run") as run:
         with pytest.raises(PermissionError):
             service.disable_role("ad")
 
-    proxy.assert_not_called()
+    run.assert_not_called()
