@@ -34,9 +34,10 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from models.update_item import ServiceUpdate
+
 from core.polkit import PolkitClient
 from core.roles import INSTALL_TYPE_DEB, INSTALL_TYPE_SCRIPT
-from models.update_item import ServiceUpdate
 
 if TYPE_CHECKING:
     from core.roles import InstallSpec
@@ -214,7 +215,7 @@ class GitHubReleaseService:
             raise RuntimeError(f"Téléchargement de l'asset échoué: {url}") from exc
         return dest
 
-    def install_service(self, repo: str, install: "InstallSpec | None") -> None:
+    def install_service(self, repo: str, install: InstallSpec | None) -> None:
         """Installe (ou met à jour) un service depuis sa dernière release GitHub.
 
         Flux complet : vérification Polkit, récupération de la release,

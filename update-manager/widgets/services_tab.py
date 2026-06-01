@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from models.update_item import ServiceUpdate
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -20,11 +21,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from services.github_service import GitHubReleaseService
 
 from core.roles import InstallSpec
 from core.theme import ThemeManager
-from models.update_item import ServiceUpdate
-from services.github_service import GitHubReleaseService
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,9 @@ class ServicesUpdateTab(QWidget):
             return
         row = self._table.currentRow()
         if row < 0 or row >= len(self._updates):
-            QMessageBox.warning(self, "Aucune sélection", "Sélectionnez un service à mettre à jour.")
+            QMessageBox.warning(
+                self, "Aucune sélection", "Sélectionnez un service à mettre à jour."
+            )
             return
         update = self._updates[row]
         if not update.update_available:

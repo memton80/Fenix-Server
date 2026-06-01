@@ -5,11 +5,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from models.update_item import ServiceUpdate
+from widgets.services_tab import ServicesUpdateTab, _CheckWorker, _InstallWorker
 
 from core.roles import InstallSpec
 from core.theme import ThemeManager
-from models.update_item import ServiceUpdate
-from widgets.services_tab import ServicesUpdateTab, _CheckWorker, _InstallWorker
 
 
 @pytest.fixture

@@ -66,7 +66,7 @@ class InstallSpec:
     asset_pattern: str
 
     @classmethod
-    def from_dict(cls, data: dict[str, object], source: Path) -> "InstallSpec":
+    def from_dict(cls, data: dict[str, object], source: Path) -> InstallSpec:
         """Construit un :class:`InstallSpec` depuis le sous-objet ``install``.
 
         Args:
@@ -122,7 +122,7 @@ class Role:
     install: InstallSpec | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, object], source: Path) -> "Role":
+    def from_dict(cls, data: dict[str, object], source: Path) -> Role:
         """Construit un :class:`Role` depuis un dict JSON.
 
         Args:

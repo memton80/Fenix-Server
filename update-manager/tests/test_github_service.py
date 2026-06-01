@@ -8,14 +8,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from core.roles import InstallSpec
 from services.github_service import (
     POLKIT_ACTION_INSTALL_SERVICE,
     GitHubReleaseService,
     ManualInstallRequired,
 )
 
+from core.roles import InstallSpec
 
 # --- latest_release / _get_json -------------------------------------------
 
