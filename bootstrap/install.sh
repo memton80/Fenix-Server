@@ -198,6 +198,62 @@ install_desktop_entries() {
     install_one_desktop_entry "ad-manager" "fenix-ad-manager.desktop" "fenix-ad-manager"
 }
 
+# --- configuration du domaine AD (Samba) -----------------------------------
+
+install_samba() {
+    export DEBIAN_FRONTEND=noninteractive
+    if apt-get install -y samba samba-common-bin smbclient; then
+        ok "Samba installé (samba, samba-common-bin, smbclient)"
+    else
+        ko "Échec de l'installation de Samba"
+    fi
+}
+
+# Demande interactivement le domaine, le realm et le mot de passe admin (deux
+# fois), provisionne le domaine AD puis active le service samba-ad-dc.
+provision_samba_ad() {
+    if ! command -v samba-tool > /dev/null 2>&1; then
+        ko "Provisionnement AD ignoré : samba-tool introuvable (Samba non installé)"
+        return
+    fi
+
+    local domain realm adminpass adminpass_confirm
+    read -r -p "    Nom de domaine court (ex: FENIX) : " domain
+    read -r -p "    Realm FQDN (ex: FENIX.LOCAL) : " realm
+    while true; do
+        read -r -s -p "    Mot de passe administrateur : " adminpass
+        printf '\n'
+        read -r -s -p "    Confirmer le mot de passe : " adminpass_confirm
+        printf '\n'
+        if [[ "$adminpass" == "$adminpass_confirm" ]]; then
+            break
+        fi
+        warn "Les mots de passe ne correspondent pas — nouvelle saisie"
+    done
+
+    # samba-tool refuse d'écraser un smb.conf existant : on le sauvegarde.
+    if [[ -f /etc/samba/smb.conf ]]; then
+        mv /etc/samba/smb.conf "/etc/samba/smb.conf.bak.$(date +%Y%m%d%H%M%S)"
+    fi
+
+    if samba-tool domain provision \
+        --use-rfc2307 \
+        --realm="$realm" \
+        --domain="$domain" \
+        --adminpass="$adminpass"; then
+        ok "Domaine AD provisionné (realm $realm, domaine $domain)"
+    else
+        ko "Échec du provisionnement du domaine AD"
+        return
+    fi
+
+    if systemctl enable --now samba-ad-dc; then
+        ok "Service samba-ad-dc activé et démarré"
+    else
+        ko "Échec de l'activation de samba-ad-dc"
+    fi
+}
+
 # --- résumé ----------------------------------------------------------------
 
 print_summary() {
@@ -248,6 +304,10 @@ main() {
 
     step "Installation des entrées de menu (.desktop)"
     install_desktop_entries
+
+    step "Configuration du domaine AD"
+    install_samba
+    provision_samba_ad
 
     print_summary
     (( FAILURES == 0 ))
