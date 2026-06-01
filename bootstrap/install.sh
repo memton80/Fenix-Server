@@ -154,12 +154,15 @@ install_polkit_policies() {
     fi
 }
 
-install_desktop_entry() {
-    local src="$PROJECT_ROOT/update-manager/fenix-update-manager.desktop"
-    local app_dir="$PROJECT_ROOT/update-manager"
-    local launcher="/usr/local/bin/fenix-update-manager"
+# Installe l'entrée de menu .desktop d'une app et son lanceur dédié.
+# Args : <dossier_app> <fichier.desktop> <nom_lanceur>
+install_one_desktop_entry() {
+    local app="$1" desktop_file="$2" launcher_name="$3"
+    local app_dir="$PROJECT_ROOT/$app"
+    local src="$app_dir/$desktop_file"
+    local launcher="/usr/local/bin/$launcher_name"
     local dest_dir="/usr/share/applications"
-    local dest="$dest_dir/fenix-update-manager.desktop"
+    local dest="$dest_dir/$desktop_file"
     if [[ ! -f "$src" ]]; then
         ko "Fichier .desktop introuvable ($src)"
         return
@@ -185,8 +188,13 @@ EOF
         chmod 644 "$dest"
         ok "Entrée de menu installée ($dest) + lanceur ($launcher)"
     else
-        ko "Échec de l'installation de l'entrée de menu"
+        ko "Échec de l'installation de l'entrée de menu ($desktop_file)"
     fi
+}
+
+install_desktop_entries() {
+    install_one_desktop_entry "update-manager" "fenix-update-manager.desktop" "fenix-update-manager"
+    install_one_desktop_entry "server-manager" "fenix-server-manager.desktop" "fenix-server-manager"
 }
 
 # --- résumé ----------------------------------------------------------------
@@ -237,8 +245,8 @@ main() {
     step "Installation de la policy Polkit"
     install_polkit_policies
 
-    step "Installation de l'entrée de menu (.desktop)"
-    install_desktop_entry
+    step "Installation des entrées de menu (.desktop)"
+    install_desktop_entries
 
     print_summary
     (( FAILURES == 0 ))

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Fenix Server</vendor>
+
+  <action id="org.fenixserver.server.enable-role">
+    <description>Activer un rôle serveur</description>
+    <description xml:lang="en">Enable a server role</description>
+    <message>L'authentification est requise pour activer un rôle serveur.</message>
+    <message xml:lang="en">Authentication is required to enable a server role.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.server.disable-role">
+    <description>Désactiver un rôle serveur</description>
+    <description xml:lang="en">Disable a server role</description>
+    <message>L'authentification est requise pour désactiver un rôle serveur.</message>
+    <message xml:lang="en">Authentication is required to disable a server role.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>

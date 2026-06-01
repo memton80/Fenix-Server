@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Fenix — Gestionnaire de serveur
+Comment=Activation et état des rôles serveur Fenix
+Comment[en]=Fenix server roles activation and status
+Exec=fenix-server-manager
+Icon=preferences-system
+Terminal=false
+Categories=System;
