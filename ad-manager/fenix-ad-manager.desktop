@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Fenix — Gestionnaire AD
+Comment=Gestion du domaine Active Directory (utilisateurs, groupes)
+Comment[en]=Active Directory domain management (users, groups)
+Exec=fenix-ad-manager
+Icon=system-users
+Terminal=false
+Categories=System;

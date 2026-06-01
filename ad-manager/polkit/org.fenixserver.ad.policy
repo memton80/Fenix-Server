@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Fenix Server</vendor>
+
+  <action id="org.fenixserver.ad.create-user">
+    <description>Créer un utilisateur du domaine</description>
+    <description xml:lang="en">Create a domain user</description>
+    <message>L'authentification est requise pour créer un utilisateur du domaine.</message>
+    <message xml:lang="en">Authentication is required to create a domain user.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.ad.modify-user">
+    <description>Modifier un utilisateur du domaine</description>
+    <description xml:lang="en">Modify a domain user</description>
+    <message>L'authentification est requise pour modifier un utilisateur du domaine.</message>
+    <message xml:lang="en">Authentication is required to modify a domain user.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.ad.delete-user">
+    <description>Supprimer un utilisateur du domaine</description>
+    <description xml:lang="en">Delete a domain user</description>
+    <message>L'authentification est requise pour supprimer un utilisateur du domaine.</message>
+    <message xml:lang="en">Authentication is required to delete a domain user.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.ad.create-group">
+    <description>Créer un groupe du domaine</description>
+    <description xml:lang="en">Create a domain group</description>
+    <message>L'authentification est requise pour créer un groupe du domaine.</message>
+    <message xml:lang="en">Authentication is required to create a domain group.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.fenixserver.ad.delete-group">
+    <description>Supprimer un groupe du domaine</description>
+    <description xml:lang="en">Delete a domain group</description>
+    <message>L'authentification est requise pour supprimer un groupe du domaine.</message>
+    <message xml:lang="en">Authentication is required to delete a domain group.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>
