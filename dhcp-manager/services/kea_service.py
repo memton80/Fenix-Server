@@ -55,6 +55,10 @@ _CONTENT_TYPE = "application/json"
 
 # Résultat « succès » d'une commande Kea (champ ``result`` de la réponse).
 _KEA_SUCCESS = 0
+# Résultat « vide » de Kea (aucun objet correspondant) : pas une erreur.
+_KEA_EMPTY = 3
+# Texte renvoyé par lease4-get-all lorsqu'aucun bail n'existe.
+_EMPTY_LEASES_TEXT = "0 IPv4 lease(s) found"
 # Actions systemctl autorisées pour le service Kea.
 _SERVICE_ACTIONS = ("start", "stop", "restart")
 
@@ -123,18 +127,29 @@ class KeaService:
         token = base64.b64encode(f"{self._username}:{self._password}".encode()).decode("ascii")
         return {"Authorization": f"Basic {token}"}
 
-    def _command(self, command: str, arguments: dict[str, object] | None = None) -> dict:
+    def _command(
+        self,
+        command: str,
+        arguments: dict[str, object] | None = None,
+        *,
+        allow_empty: bool = False,
+    ) -> dict:
         """Envoie une commande à l'API Kea et retourne ses ``arguments``.
 
         Args:
             command: Nom de la commande Kea (ex. ``"lease4-get-all"``).
             arguments: Arguments de la commande, ou ``None``.
+            allow_empty: Si ``True``, un résultat « vide » de Kea
+                (``result == 3``) n'est pas une erreur : les ``arguments``
+                (vides) sont retournés au lieu de lever ``RuntimeError``.
 
         Returns:
-            Le bloc ``arguments`` de la réponse (vide si absent).
+            Le bloc ``arguments`` de la réponse (vide si absent ou si la réponse
+            est vide et ``allow_empty``).
 
         Raises:
-            RuntimeError: si l'appel HTTP échoue ou si Kea renvoie une erreur.
+            RuntimeError: si l'appel HTTP échoue ou si Kea renvoie une erreur
+                (hors résultat « vide » toléré).
         """
         payload: dict[str, object] = {"command": command, "service": [KEA_SERVICE]}
         if arguments is not None:
@@ -151,24 +166,36 @@ class KeaService:
 
         # L'API renvoie une liste de réponses (une par service ciblé).
         entry = body[0] if isinstance(body, list) and body else body
-        if entry.get("result", _KEA_SUCCESS) != _KEA_SUCCESS:
-            message = entry.get("text", "erreur inconnue")
-            logger.error("Commande Kea '%s' rejetée: %s", command, message)
-            raise RuntimeError(f"Commande Kea rejetée: {message}")
-        return entry.get("arguments", {})
+        result = entry.get("result", _KEA_SUCCESS)
+        if result == _KEA_SUCCESS or (allow_empty and result == _KEA_EMPTY):
+            return entry.get("arguments", {})
+        message = entry.get("text", "erreur inconnue")
+        logger.error("Commande Kea '%s' rejetée: %s", command, message)
+        raise RuntimeError(f"Commande Kea rejetée: {message}")
 
     # --- baux -------------------------------------------------------------
 
     def list_leases(self) -> list[DhcpLease]:
         """Retourne les baux DHCP actifs (``lease4-get-all``).
 
+        Une absence de bail n'est pas une erreur : si Kea répond « vide »
+        (``result == 3``) ou avec le texte « 0 IPv4 lease(s) found », une liste
+        vide est retournée.
+
         Returns:
-            Les :class:`DhcpLease` connus du serveur.
+            Les :class:`DhcpLease` connus du serveur (``[]`` si aucun).
 
         Raises:
-            RuntimeError: en cas d'erreur d'API.
+            RuntimeError: en cas d'erreur d'API (autre qu'une réponse vide).
         """
-        arguments = self._command("lease4-get-all")
+        try:
+            arguments = self._command("lease4-get-all", allow_empty=True)
+        except RuntimeError as exc:
+            # Certaines versions renvoient ce texte sans le code « vide » : on le
+            # traite aussi comme « aucun bail » plutôt que comme une erreur.
+            if _EMPTY_LEASES_TEXT in str(exc):
+                return []
+            raise
         leases = arguments.get("leases", [])
         return [DhcpLease.from_kea(lease) for lease in leases]
 
