@@ -513,7 +513,7 @@ provision_samba_ad() {
 
 # Installe Kea via apt, génère la config du serveur DHCPv4
 # (/etc/kea/kea-dhcp4.conf : interface détectée, socket de contrôle, hooks
-# lease_cmds/subnet_cmds), génère un mot de passe d'API et la config du Control
+# lease_cmds), génère un mot de passe d'API et la config du Control
 # Agent (auth HTTP basic, API REST locale port 8000, même socket de contrôle),
 # puis redémarre kea-dhcp4-server avant kea-ctrl-agent. Le mot de passe est
 # partagé avec le DHCP Manager via /etc/kea/kea-api-password.
@@ -548,7 +548,9 @@ install_kea() {
     [[ -n "$detected_hook" ]] && hooks_dir="$(dirname "$detected_hook")"
 
     # Socket de contrôle UNIX partagé avec le Control Agent (cf. control-sockets
-    # de kea-ctrl-agent.conf, même chemin) + hooks lease_cmds / subnet_cmds.
+    # de kea-ctrl-agent.conf, même chemin) + hook lease_cmds (baux via l'API).
+    # Les plages (subnet4) sont gérées directement dans ce fichier par le DHCP
+    # Manager : le hook subnet_cmds n'est donc pas nécessaire.
     if cat > "$dhcp4_conf" <<EOF
 {
   "Dhcp4": {
@@ -564,8 +566,7 @@ install_kea() {
       "lfc-interval": 3600
     },
     "hooks-libraries": [
-      { "library": "$hooks_dir/libdhcp_lease_cmds.so" },
-      { "library": "$hooks_dir/libdhcp_subnet_cmds.so" }
+      { "library": "$hooks_dir/libdhcp_lease_cmds.so" }
     ],
     "subnet4": [],
     "loggers": [
@@ -576,7 +577,7 @@ install_kea() {
 EOF
     then
         chmod 644 "$dhcp4_conf"
-        ok "Serveur DHCPv4 configuré ($dhcp4_conf, interface $iface, hooks lease/subnet)"
+        ok "Serveur DHCPv4 configuré ($dhcp4_conf, interface $iface, hook lease_cmds)"
     else
         ko "Échec de la configuration du serveur DHCPv4 ($dhcp4_conf)"
         return
