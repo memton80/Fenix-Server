@@ -18,11 +18,11 @@ from __future__ import annotations
 import logging
 
 from dasbus.error import DBusError
+from models.update_item import SystemPackageUpdate
 from PySide6.QtCore import QObject, Signal
 
 from core.dbus_helper import get_system_bus, service_available
 from core.polkit import PolkitClient
-from models.update_item import SystemPackageUpdate
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,6 @@ from dasbus.error import DBusError
 
 from core import dbus_helper
 
-
 # --- get_system_bus -------------------------------------------------------
 
 

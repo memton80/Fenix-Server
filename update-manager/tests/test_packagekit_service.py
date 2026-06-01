@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from dasbus.error import DBusError
-
 from models.update_item import SystemPackageUpdate
 from services import packagekit_service as pk
 from services.packagekit_service import PackageKitService
@@ -77,7 +76,9 @@ def test_request_updates_emet_updates_found():
 
         assert len(received) == 1
         updates = received[0]
-        assert updates[0] == SystemPackageUpdate("bash;5.2-1;amd64;debian", "bash", "5.2-1", "GNU Bash")
+        assert updates[0] == SystemPackageUpdate(
+            "bash;5.2-1;amd64;debian", "bash", "5.2-1", "GNU Bash"
+        )
         assert updates[1].name == "vim"
     finally:
         _stop(ctx)

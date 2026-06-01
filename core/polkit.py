@@ -44,7 +44,7 @@ class PolkitClient:
         """Initialise le client et prépare la connexion à l'autorité Polkit."""
         self._authority: InterfaceProxy | None = None
 
-    def _get_authority(self) -> "InterfaceProxy":
+    def _get_authority(self) -> InterfaceProxy:
         """Retourne (en le créant à la demande) le proxy vers l'autorité Polkit.
 
         Raises:

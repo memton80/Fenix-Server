@@ -5,11 +5,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from models.update_item import SystemPackageUpdate
 from PySide6.QtCore import QObject, Signal
+from widgets.system_tab import SystemUpdateTab
 
 from core.theme import ThemeManager
-from models.update_item import SystemPackageUpdate
-from widgets.system_tab import SystemUpdateTab
 
 
 class FakePackageKitService(QObject):
